@@ -7,7 +7,6 @@ import app.fwchat.domain.AppDefaults
 import app.fwchat.domain.Chat
 import app.fwchat.domain.ChatEngine
 import app.fwchat.domain.ChatRepository
-import app.fwchat.domain.EngineEvent
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.ModelInfo
 import app.fwchat.domain.ModelRepository
@@ -25,14 +24,18 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.ZonedDateTime
 
 /** Ce que l'écran affiche. Les textes en cours de streaming n'y sont PAS: voir [ChatViewModel.streaming]. */
@@ -44,6 +47,8 @@ data class ChatUiState(
     val loaded: Boolean = false,
     /** Chat supprimé (ou introuvable) alors qu'on l'affichait. */
     val notFound: Boolean = false,
+    /** La lecture du chat a échoué (ex. base illisible, ligne trop grosse): afficher un message, pas planter. */
+    val loadError: Boolean = false,
     /** Vide = « Nouveau chat ». */
     val title: String = "",
     val modelId: String? = null,
@@ -67,8 +72,11 @@ data class ChatUiState(
 )
 
 sealed interface ChatUiEvent {
-    /** Chat créé (1er envoi d'un brouillon) ou fork: la coque navigue (onChatCreated). */
-    data class OpenChat(val chatId: String) : ChatUiEvent
+    /**
+     * Chat créé (1er envoi d'un brouillon, [fromDraft] = true: l'écran peut alors vider son champ) ou fork:
+     * la coque navigue (onChatCreated).
+     */
+    data class OpenChat(val chatId: String, val fromDraft: Boolean = false) : ChatUiEvent
     data class CopyText(val text: String, val confirmation: String) : ChatUiEvent
     data class Notice(val message: String) : ChatUiEvent
     data object ScrollToBottom : ChatUiEvent
@@ -78,11 +86,6 @@ sealed interface ChatUiEvent {
 sealed interface EngineNotice {
     data object Unauthorized : EngineNotice
     data class Message(val text: String) : EngineNotice
-}
-
-fun EngineEvent.toNotice(): EngineNotice = when (this) {
-    EngineEvent.Unauthorized -> EngineNotice.Unauthorized
-    is EngineEvent.Error -> EngineNotice.Message(message)
 }
 
 /**
@@ -117,14 +120,35 @@ class ChatViewModel(
     private sealed interface ChatLoad {
         data object Loading : ChatLoad
         data class Loaded(val chat: Chat?) : ChatLoad
+        data object Failed : ChatLoad
     }
 
     private val chatLoad: StateFlow<ChatLoad> =
         (if (chatId == null) flowOf(ChatLoad.Loaded(null)) else chats.observeChat(chatId).map { ChatLoad.Loaded(it) as ChatLoad })
+            // Une exception SQLite (ligne trop grosse pour la CursorWindow…) ne doit pas faire tomber le viewModelScope.
+            .catch { emit(ChatLoad.Failed) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, if (chatId == null) ChatLoad.Loaded(null) else ChatLoad.Loading)
 
+    private val threadFailed = MutableStateFlow(false)
+
+    /**
+     * Fil de messages. Chaque checkpoint de la base (1/s pendant un streaming) re-émet tout le fil: on réutilise les
+     * instances inchangées et on supprime les émissions identiques ([ThreadDiff]: ignore content/reasoning/updatedAt
+     * d'un message en STREAMING, dont le texte vient de `engine.streaming`).
+     */
     private val threadFlow: Flow<List<ThreadItem>> =
-        if (chatId == null) flowOf(emptyList()) else chats.observeThread(chatId)
+        if (chatId == null) {
+            flowOf(emptyList())
+        } else {
+            var previous: List<ThreadItem> = emptyList()
+            chats.observeThread(chatId)
+                .map { next -> ThreadDiff.stabilize(previous, next).also { previous = it } }
+                .distinctUntilChanged()
+                .catch {
+                    threadFailed.value = true
+                    emit(emptyList())
+                }
+        }
 
     private val generatingFlow: Flow<Boolean> =
         engine.generatingChats.map { chatId != null && chatId in it }
@@ -136,7 +160,13 @@ class ChatViewModel(
     val streaming: StateFlow<Map<String, StreamingText>> get() = engine.streaming
 
     /** Événements du moteur (clé API invalide, erreurs): l'écran visible les affiche en snackbar. */
-    val engineNotices: Flow<EngineNotice> get() = engine.events.map { it.toNotice() }
+    val engineNotices: Flow<EngineNotice> get() = engine.events.mapNotNull { it.noticeFor(chatId) }
+
+    /**
+     * Copie du brouillon de saisie: survit aux changements de configuration quand le texte est trop gros pour
+     * `rememberSaveable` (voir [BoundedTextSaver]). Pas un état observable: l'écran reste propriétaire du champ.
+     */
+    var draftBackup: String = ""
 
     private val eventChannel = Channel<ChatUiEvent>(Channel.BUFFERED)
     val events: Flow<ChatUiEvent> = eventChannel.receiveAsFlow()
@@ -148,7 +178,7 @@ class ChatViewModel(
         val extras = combine(modelsFlow, promptsFlow, localParams, thinking, editing) { m, p, lp, th, ed ->
             Extras(m, p, lp, th, ed)
         }
-        combine(core, extras) { c, e -> buildState(c, e) }
+        combine(core, extras, threadFailed) { c, e, failed -> buildState(c, e, failed) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState(chatId = chatId, isDraft = chatId == null))
     }
 
@@ -168,7 +198,7 @@ class ChatViewModel(
         val editing: String?,
     )
 
-    private fun buildState(c: Core, e: Extras): ChatUiState {
+    private fun buildState(c: Core, e: Extras, threadFailed: Boolean): ChatUiState {
         if (chatId == null) {
             val d = c.draft
             return ChatUiState(
@@ -190,12 +220,14 @@ class ChatViewModel(
             )
         }
         val chat = (c.load as? ChatLoad.Loaded)?.chat
-        val loaded = c.load is ChatLoad.Loaded
+        val failed = c.load is ChatLoad.Failed || threadFailed
+        val loaded = c.load is ChatLoad.Loaded || failed
         return ChatUiState(
             chatId = chatId,
             isDraft = false,
             loaded = loaded,
-            notFound = loaded && chat == null,
+            loadError = failed,
+            notFound = c.load is ChatLoad.Loaded && chat == null && !failed,
             title = chat?.title.orEmpty(),
             modelId = chat?.modelId,
             modelAvailable = chat == null || e.models.isEmpty() || e.models.any { it.id == chat.modelId },
@@ -209,7 +241,7 @@ class ChatViewModel(
             generating = c.generating,
             editingMessageId = e.editing,
             thinkingOverrides = e.thinking,
-            canSend = chat != null && !c.generating,
+            canSend = chat != null && !c.generating && !failed,
         )
     }
 
@@ -257,7 +289,11 @@ class ChatViewModel(
 
     /**
      * Envoie [text]. Brouillon: crée le chat (modèle, snapshot du prompt résolu, paramètres) puis envoie puis
-     * demande la navigation. Retourne true si l'envoi est accepté (l'écran peut vider le champ).
+     * demande la navigation. Retourne true si l'envoi est accepté.
+     *
+     * Chat existant: l'écran peut vider son champ tout de suite. Brouillon: la création du chat peut encore échouer
+     * (le texte ne doit alors PAS être perdu) — l'écran ne vide son champ qu'à l'événement
+     * [ChatUiEvent.OpenChat] (`fromDraft`), voir [clearsDraftImmediately].
      */
     fun send(text: String): Boolean {
         if (text.isBlank()) return false
@@ -280,7 +316,7 @@ class ChatViewModel(
             try {
                 val id = chats.createChat(modelId, d.promptSnapshot(clock()), d.params)
                 engine.send(id, text)
-                eventChannel.send(ChatUiEvent.OpenChat(id))
+                eventChannel.send(ChatUiEvent.OpenChat(id, fromDraft = true))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -301,6 +337,34 @@ class ChatViewModel(
         if (chatId == null || state.value.generating) return
         engine.regenerate(assistantMessageId)
         eventChannel.trySend(ChatUiEvent.ScrollToBottom)
+    }
+
+    /**
+     * « Réessayer » sur un message assistant en erreur. Le contrat ne permet de relancer qu'en créant un frère
+     * (`regenerate` -> `addAssistantSibling`): sans précaution, chaque échec laisserait un bloc d'erreur de plus
+     * (« 1/4 »). Choix: on crée le frère comme d'habitude, puis, quand la nouvelle génération est terminée
+     * (COMPLETE ou ERROR; pas INTERRUPTED, où l'utilisateur a pu vouloir garder les deux), l'ancien message en
+     * erreur — s'il n'a aucun contenu utile — est supprimé (`deleteSubtree`). Il ne reste ainsi qu'une réponse.
+     */
+    fun retry(failedMessageId: String) {
+        val id = chatId ?: return
+        if (state.value.generating) return
+        val failed = state.value.thread.firstOrNull { it.message.id == failedMessageId }?.message ?: return
+        engine.regenerate(failedMessageId)
+        eventChannel.trySend(ChatUiEvent.ScrollToBottom)
+        if (!RetryCleanup.isDroppable(failed)) return
+        scope.launch {
+            try {
+                val finished = withTimeoutOrNull(RETRY_CLEANUP_TIMEOUT_MS) {
+                    chats.observeThread(id).first { RetryCleanup.replacement(it, failedMessageId) != null }
+                }?.let { RetryCleanup.replacement(it, failedMessageId) }
+                if (finished != null && RetryCleanup.shouldDropFailed(finished)) chats.deleteSubtree(failedMessageId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // nettoyage facultatif: ne jamais gêner l'utilisateur
+            }
+        }
     }
 
     fun startEdit(messageId: String) {
@@ -438,6 +502,10 @@ class ChatViewModel(
     suspend fun refreshModels(): Result<Unit> = models.refresh()
 
     // ------------------------------------------------------------------ utilitaires
+
+    private companion object {
+        const val RETRY_CLEANUP_TIMEOUT_MS = 30 * 60 * 1000L
+    }
 
     private fun notice(message: String) {
         eventChannel.trySend(ChatUiEvent.Notice(message))
