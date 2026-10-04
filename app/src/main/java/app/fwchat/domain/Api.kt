@@ -41,7 +41,8 @@ interface FireworksApi {
 
 sealed interface EngineEvent {
     data object Unauthorized : EngineEvent
-    data class Error(val message: String) : EngineEvent
+    /** [chatId] = chat concerné (null = erreur globale). L'UI n'affiche que les erreurs du chat visible. */
+    data class Error(val message: String, val chatId: String? = null) : EngineEvent
 }
 
 /**
