@@ -1,0 +1,57 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Installer les composants du SDK Android
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-37.0" "build-tools;36.0.0" > /dev/null
+
+      - name: Tests unitaires et APK release
+        run: ./gradlew --no-daemon testDebugUnitTest assembleRelease
+
+      - name: Préparer l'APK
+        run: cp app/build/outputs/apk/release/app-release.apk fw-chat.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fw-chat-apk
+          path: fw-chat.apk
+          if-no-files-found: error
+
+      - name: Publier la pre-release "latest"
+        if: github.ref_name == 'claude/android-fireworks-app-i6l3wr' || github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NOTES="Build automatique du commit ${GITHUB_SHA::7} (branche ${GITHUB_REF_NAME}). Téléchargez fw-chat.apk et installez-le."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release edit latest --prerelease --target "$GITHUB_SHA" --notes "$NOTES"
+          else
+            gh release create latest --prerelease --target "$GITHUB_SHA" \
+              --title "FW Chat (dernier build)" --notes "$NOTES"
+          fi
+          gh release upload latest fw-chat.apk --clobber

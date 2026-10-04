@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FW Chat</string>
+    <string name="home_title">FW Chat</string>
+    <string name="home_placeholder">Aucune conversation pour le moment.</string>
+</resources>
