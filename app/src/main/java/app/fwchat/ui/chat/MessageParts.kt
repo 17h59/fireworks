@@ -45,11 +45,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.fwchat.domain.Message
@@ -57,13 +59,10 @@ import app.fwchat.domain.MessageStatus
 import app.fwchat.domain.StreamingText
 import app.fwchat.domain.ThreadItem
 import app.fwchat.ui.common.formatInt
-import app.fwchat.ui.markdown.MarkdownBlocksCache
+import app.fwchat.ui.markdown.MarkdownBlocksLoader
 import app.fwchat.ui.markdown.MarkdownStyle
+import app.fwchat.ui.markdown.MarkdownTail
 import app.fwchat.ui.markdown.MarkdownText
-import app.fwchat.ui.markdown.markdownItems
-
-/** Au-delà, un message utilisateur est affiché en texte brut (évite de composer des milliers de blocs dans une bulle). */
-private const val USER_MARKDOWN_MAX_CHARS = 20_000
 
 /** Limite la largeur à [fraction] de la largeur disponible (bulle utilisateur ≈ 85 %). */
 private fun Modifier.maxWidthFraction(fraction: Float): Modifier = layout { measurable, constraints ->
@@ -75,25 +74,71 @@ private fun Modifier.maxWidthFraction(fraction: Float): Modifier = layout { meas
 // ------------------------------------------------------------------------------------------------
 // Message utilisateur
 
+private val USER_BUBBLE_SHAPE = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)
+
+/** Message utilisateur court (au plus [LongText.THRESHOLD_CHARS] caractères): rendu markdown dans une bulle. */
 @Composable
 internal fun UserBubble(text: String, style: MarkdownStyle) {
+    BubbleSurface(USER_BUBBLE_SHAPE, top = 12.dp, bottom = 2.dp) {
+        MarkdownText(text = text, style = style, selectable = true)
+    }
+}
+
+@Composable
+private fun BubbleSurface(
+    shape: Shape,
+    top: Dp,
+    bottom: Dp,
+    content: @Composable () -> Unit,
+) {
     Box(
-        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 2.dp),
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = top, bottom = bottom),
         contentAlignment = Alignment.CenterEnd,
     ) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             contentColor = MaterialTheme.colorScheme.onSurface,
-            shape = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp),
+            shape = shape,
             modifier = Modifier.maxWidthFraction(0.85f),
         ) {
-            Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                if (text.length <= USER_MARKDOWN_MAX_CHARS) {
-                    MarkdownText(text = text, style = style, selectable = true)
-                } else {
-                    SelectionContainer { Text(text, style = style.body) }
-                }
-            }
+            Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) { content() }
+        }
+    }
+}
+
+/**
+ * Message utilisateur très long, replié: début du texte (≈ 12 lignes) + « Tout afficher ». Rien de lourd n'est
+ * composé (un coller de 300 Ko ne fait ni layout géant ni ANR).
+ */
+@Composable
+internal fun LongUserPreview(text: String, style: MarkdownStyle, onExpand: () -> Unit) {
+    val preview = remember(text) { LongText.preview(text) + "…" }
+    BubbleSurface(USER_BUBBLE_SHAPE, top = 12.dp, bottom = 2.dp) {
+        Column {
+            Text(
+                text = preview,
+                style = style.body,
+                maxLines = LongText.PREVIEW_LINES + 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            TextButton(onClick = onExpand) { Text("Tout afficher (${formatInt(text.length)} caractères)") }
+        }
+    }
+}
+
+/** Une tranche du texte complet d'un message utilisateur long déplié (une bulle découpée en items paresseux). */
+@Composable
+internal fun LongUserChunk(text: String, first: Boolean, last: Boolean, style: MarkdownStyle, onCollapse: () -> Unit) {
+    val shape = RoundedCornerShape(
+        topStart = if (first) 20.dp else 0.dp,
+        topEnd = if (first) 20.dp else 0.dp,
+        bottomEnd = if (last) 6.dp else 0.dp,
+        bottomStart = if (last) 20.dp else 0.dp,
+    )
+    BubbleSurface(shape, top = if (first) 12.dp else 0.dp, bottom = if (last) 2.dp else 0.dp) {
+        Column(Modifier.fillMaxWidth()) {
+            SelectionContainer { Text(text, style = style.body, modifier = Modifier.fillMaxWidth()) }
+            if (last) TextButton(onClick = onCollapse) { Text("Réduire") }
         }
     }
 }
@@ -101,17 +146,22 @@ internal fun UserBubble(text: String, style: MarkdownStyle) {
 // ------------------------------------------------------------------------------------------------
 // Message assistant: corps en direct et pied
 
-/** Corps du message en cours: lit le texte live DANS cet item (seul ce message se recompose à chaque token). */
+/**
+ * Partie vivante du message en cours: SEUL le dernier bloc (ouvert) est rendu ici — et, pour un gros bloc, sa
+ * dernière tranche seulement. Les blocs fermés sont des items à part (voir `assistantItems`). Le texte live est lu
+ * DANS cet item: un token ne recompose que lui.
+ */
 @Composable
-internal fun LiveBody(m: Message, streaming: State<Map<String, StreamingText>>, style: MarkdownStyle) {
-    val live by rememberLiveText(m.id, streaming)
-    val content = live?.content ?: m.content
-    val reasoning = live?.reasoning ?: m.reasoning.orEmpty()
+internal fun LiveBody(entry: LiveEntry, streaming: State<Map<String, StreamingText>>, style: MarkdownStyle) {
+    val live by rememberLiveText(entry.id, streaming)
+    val content = live?.content ?: entry.fallback
+    val parts = entry.markdown.parts(content)
+    val block = parts.liveBlock
     when {
-        content.isNotEmpty() -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-            MarkdownText(text = content, style = style, streaming = true, resetKey = m.id)
+        block != null -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
+            MarkdownTail(block = block, fromSlice = parts.liveFromSlice, style = style)
         }
-        reasoning.isEmpty() -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        (live?.reasoning).isNullOrEmpty() -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
             CircularProgressIndicator(
                 modifier = Modifier.size(18.dp).semantics { contentDescription = "Réponse en cours" },
                 strokeWidth = 2.dp,
@@ -167,7 +217,7 @@ private fun ErrorBlock(m: Message, generating: Boolean, cb: MessageCallbacks) {
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 8.dp),
             )
-            TextButton(onClick = { cb.onRegenerate(m.id) }, enabled = !generating) { Text("Réessayer") }
+            TextButton(onClick = { cb.onRetry(m.id) }, enabled = !generating) { Text("Réessayer") }
         }
     }
 }
@@ -229,7 +279,8 @@ private fun ActionIcon(
 
 @Composable
 internal fun EditBox(message: Message, isUser: Boolean, generating: Boolean, cb: MessageCallbacks) {
-    var text by rememberSaveable(message.id) { mutableStateOf(message.content) }
+    // Jamais de gros texte dans le Bundle (TransactionTooLargeException): au-delà de 50 000 caractères, non sauvegardé.
+    var text by rememberSaveable(message.id, stateSaver = BoundedTextSaver) { mutableStateOf(message.content) }
     val focus = remember { FocusRequester() }
     LaunchedEffect(message.id) {
         try {
@@ -322,7 +373,7 @@ internal fun LazyListScope.thinkingItems(
     mode: ThinkingMode,
     cb: MessageCallbacks,
     thinkStyle: MarkdownStyle,
-    cache: MarkdownBlocksCache,
+    loader: MarkdownBlocksLoader,
 ) {
     item(key = "m:${m.id}:think", contentType = "think") {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp)) {
@@ -334,11 +385,13 @@ internal fun LazyListScope.thinkingItems(
         }
     }
     if (mode == ThinkingMode.FULL) {
-        markdownItems(
+        markdownBody(
             key = "m:${m.id}:r",
-            blocks = cache.blocks("r:${m.id}", reasoning),
+            cacheKey = "r:${m.id}",
+            text = reasoning,
             style = thinkStyle,
             modifier = Modifier.padding(start = 28.dp, end = 16.dp),
+            loader = loader,
         )
         item(key = "m:${m.id}:r-shrink", contentType = "think-shrink") {
             Box(Modifier.padding(start = 16.dp)) { ShrinkButton { cb.onThinkingShrink(m.id, mode) } }

@@ -213,6 +213,13 @@ class ChatSupportTest {
     }
 
     @Test
+    fun laPermissionNotificationsNEstDemandeeQuUneFois() {
+        assertTrue(shouldAskNotificationPermission(granted = false, alreadyAsked = false))
+        assertFalse(shouldAskNotificationPermission(granted = false, alreadyAsked = true))
+        assertFalse(shouldAskNotificationPermission(granted = true, alreadyAsked = false))
+    }
+
+    @Test
     fun retryCleanupDetecteLeRemplacantTermine() {
         val failed = msg("e", MessageStatus.ERROR, content = "", parent = "u")
         assertTrue(RetryCleanup.isDroppable(failed))

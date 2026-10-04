@@ -151,6 +151,9 @@ fun EngineEvent.noticeFor(visibleChatId: String?): EngineNotice? = when (this) {
  */
 fun clearsDraftImmediately(isDraftChat: Boolean, accepted: Boolean): Boolean = accepted && !isDraftChat
 
+/** Demander POST_NOTIFICATIONS: seulement si elle n'est pas accordée ET qu'on ne l'a jamais demandée (pas de boucle). */
+fun shouldAskNotificationPermission(granted: Boolean, alreadyAsked: Boolean): Boolean = !granted && !alreadyAsked
+
 // ------------------------------------------------------------------------------------------------
 // « Réessayer »: ne pas empiler les blocs d'erreur.
 
