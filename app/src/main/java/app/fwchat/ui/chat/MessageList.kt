@@ -103,11 +103,13 @@ internal fun MessageList(
     val thinkStyle = rememberThinkingStyle(style)
     val cache = rememberMarkdownBlocksCache()
 
-    val connection = remember(following) {
+    val connection = remember(following, listState) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
                 // Doigt qui descend = le contenu remonte vers le début: l'utilisateur lit plus haut.
-                if (source == NestedScrollSource.UserInput && available.y > 0f) following.value = false
+                if (source == NestedScrollSource.UserInput && available.y > 0f && listState.canScrollBackward) {
+                    following.value = false
+                }
                 return Offset.Zero
             }
         }

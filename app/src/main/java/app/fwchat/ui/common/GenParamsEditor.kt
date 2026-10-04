@@ -171,6 +171,10 @@ fun GenParamsEditor(
 
 /**
  * Feuille du bas (une seule, défilante) contenant [GenParamsEditor].
+ *
+ * Contrôlée: [onChange] reçoit les paramètres complets à chaque modification (l'appelant gère le debounce / l'enregistrement),
+ * [onDismiss] est appelé à la fermeture (bouton retour, geste ou toucher à l'extérieur).
+ * « Tout réinitialiser » rappelle [onChange] avec `AppDefaults.GEN_PARAMS` (tokens max 16384, le reste sur « Défaut du modèle »).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

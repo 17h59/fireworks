@@ -57,6 +57,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -134,10 +135,13 @@ fun ChatScreen(
         toast(if (copyToClipboard(context, text)) confirmation else "Copie impossible (texte trop volumineux ?)")
     }
 
+    val currentOnChatCreated by rememberUpdatedState(onChatCreated)
+    val currentOnOpenSettings by rememberUpdatedState(onOpenSettings)
+
     LaunchedEffect(vm) {
         vm.events.collect { event ->
             when (event) {
-                is ChatUiEvent.OpenChat -> onChatCreated(event.chatId)
+                is ChatUiEvent.OpenChat -> currentOnChatCreated(event.chatId)
                 is ChatUiEvent.CopyText -> copy(event.text, event.confirmation)
                 is ChatUiEvent.Notice -> toast(event.message)
                 ChatUiEvent.ScrollToBottom -> {
@@ -158,7 +162,7 @@ fun ChatScreen(
                             actionLabel = "Réglages",
                             duration = SnackbarDuration.Long,
                         )
-                        if (result == SnackbarResult.ActionPerformed) onOpenSettings()
+                        if (result == SnackbarResult.ActionPerformed) currentOnOpenSettings()
                     }
                     is EngineNotice.Message -> snackbar.showSnackbar(notice.text)
                 }
