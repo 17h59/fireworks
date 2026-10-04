@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,6 +50,11 @@ class ChatEngineImpl(
     private val scope: CoroutineScope,
     private val publishIntervalMs: Long = 40,
     private val checkpointIntervalMs: Long = 1000,
+    /**
+     * Suspend jusqu'à ce que l'application soit prête à générer (ex.: `recoverInterrupted()` terminé,
+     * pour qu'il ne marque pas INTERRUPTED un message légitime en cours). Attendu au début de chaque génération.
+     */
+    private val awaitReady: suspend () -> Unit = {},
 ) : ChatEngine {
 
     private val _streaming = MutableStateFlow<Map<String, StreamingText>>(emptyMap())
@@ -68,17 +74,18 @@ class ChatEngineImpl(
     override fun send(chatId: String, text: String) {
         if (text.isBlank()) return
         val job = scope.launch(start = CoroutineStart.LAZY) {
-            setup {
+            setup(chatId) {
                 val chat = chats.getChat(chatId) ?: return@setup
                 val path = chats.getActivePath(chatId)
-                val user = chats.addUserMessage(chatId, path.lastOrNull()?.id, text)
-                val placeholder = chats.addAssistantPlaceholder(chatId, user.id, chat.modelId)
-                stream(chat, path + user, placeholder)
+                generate(chat) {
+                    val user = chats.addUserMessage(chatId, path.lastOrNull()?.id, text)
+                    (path + user) to chats.addAssistantPlaceholder(chatId, user.id, chat.modelId)
+                }
             }
         }
         if (!claim(chatId, job)) {
             job.cancel()
-            _events.tryEmit(EngineEvent.Error(BUSY_MESSAGE))
+            _events.tryEmit(EngineEvent.Error(BUSY_MESSAGE, chatId))
             return
         }
         job.start()
@@ -87,29 +94,31 @@ class ChatEngineImpl(
     override fun editAndResend(userMessageId: String, newText: String) {
         if (newText.isBlank()) return
         scope.launch {
-            setup {
+            setup(null) { ctx ->
                 val old = chats.getMessage(userMessageId) ?: return@setup
+                ctx.chatId = old.chatId
                 if (!claimCurrent(old.chatId)) return@setup
                 val chat = chats.getChat(old.chatId) ?: return@setup
-                val created = chats.editUserAsBranch(userMessageId, newText)
-                val history = pathUpTo(old.chatId, created)
-                val placeholder = chats.addAssistantPlaceholder(old.chatId, created.id, chat.modelId)
-                stream(chat, history, placeholder)
+                generate(chat) {
+                    val created = chats.editUserAsBranch(userMessageId, newText)
+                    val history = pathUpTo(old.chatId, created)
+                    history to chats.addAssistantPlaceholder(old.chatId, created.id, chat.modelId)
+                }
             }
         }
     }
 
     override fun regenerate(assistantMessageId: String) {
         scope.launch {
-            setup {
+            setup(null) { ctx ->
                 val old = chats.getMessage(assistantMessageId) ?: return@setup
+                ctx.chatId = old.chatId
                 val parentId = old.parentId ?: return@setup
                 if (!claimCurrent(old.chatId)) return@setup
                 val chat = chats.getChat(old.chatId) ?: return@setup
                 val parent = chats.getMessage(parentId) ?: return@setup
                 val history = pathUpTo(old.chatId, parent)
-                val placeholder = chats.addAssistantSibling(assistantMessageId, chat.modelId)
-                stream(chat, history, placeholder)
+                generate(chat) { history to chats.addAssistantSibling(assistantMessageId, chat.modelId) }
             }
         }
     }
@@ -143,19 +152,43 @@ class ChatEngineImpl(
     /** Pour editAndResend/regenerate: le chat n'est connu qu'une fois le message lu. */
     private suspend fun claimCurrent(chatId: String): Boolean {
         val ok = claim(chatId, currentCoroutineContext().job)
-        if (!ok) _events.tryEmit(EngineEvent.Error(BUSY_MESSAGE))
+        if (!ok) _events.tryEmit(EngineEvent.Error(BUSY_MESSAGE, chatId))
         return ok
     }
 
-    /** Exécute la préparation; une erreur d'accès DB est remontée en événement. L'annulation est propagée. */
-    private suspend fun setup(block: suspend () -> Unit) {
+    /** Chat concerné par une préparation, renseigné dès qu'il est connu (pour étiqueter les erreurs). */
+    private class SetupContext(var chatId: String?)
+
+    /**
+     * Attend que l'app soit prête puis exécute la préparation; une erreur d'accès DB est remontée en événement
+     * (étiqueté par chat quand il est connu). L'annulation est propagée.
+     */
+    private suspend fun setup(chatId: String?, block: suspend (SetupContext) -> Unit) {
+        val ctx = SetupContext(chatId)
         try {
-            block()
+            awaitReady()
+            block(ctx)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _events.tryEmit(EngineEvent.Error("Erreur interne: ${e.message ?: e::class.java.simpleName}"))
+            _events.tryEmit(EngineEvent.Error("Erreur interne: ${e.message ?: e::class.java.simpleName}", ctx.chatId))
         }
+    }
+
+    /**
+     * Crée les messages (utilisateur éventuel + placeholder STREAMING) sous [NonCancellable], puis lance [stream].
+     * Un Stop qui arrive pendant la création ne laisse donc jamais un message STREAMING sans finalisation:
+     * si l'annulation survient entre le commit et le retour, [stream] finalise le placeholder en INTERRUPTED.
+     */
+    private suspend fun generate(chat: Chat, create: suspend () -> Pair<List<Message>, Message>) {
+        var created: Pair<List<Message>, Message>? = null
+        try {
+            withContext(NonCancellable) { created = create() }
+        } catch (e: CancellationException) {
+            if (created == null) throw e
+        }
+        val (history, placeholder) = created ?: return
+        stream(chat, history, placeholder)
     }
 
     /** Chemin actif racine -> [target] inclus (repli sur la remontée des parents si [target] n'est pas sur le chemin actif). */
@@ -221,6 +254,7 @@ class ChatEngineImpl(
 
         _streaming.update { it + (id to StreamingText("", "")) }
         try {
+            currentCoroutineContext().ensureActive()
             val key = settings.apiKey()?.takeIf { it.isNotBlank() }
                 ?: throw FireworksException.Unauthorized("Clé API manquante")
             val request = buildRequest(chat, history)
@@ -288,8 +322,14 @@ class ChatEngineImpl(
                     error = "Réponse vide du modèle."
                 }
             }
+            // Deux écritures indépendantes: si la 1re échoue, le statut final est quand même tenté.
+            var saveError: Exception? = null
             try {
                 chats.updateStreaming(id, final.content, final.reasoning.ifEmpty { null })
+            } catch (e: Exception) {
+                saveError = e
+            }
+            try {
                 chats.finishMessage(
                     messageId = id,
                     status = status,
@@ -300,7 +340,14 @@ class ChatEngineImpl(
                     reasoningTokens = usageFinal?.reasoningTokens,
                 )
             } catch (e: Exception) {
-                _events.tryEmit(EngineEvent.Error("Impossible d'enregistrer la réponse: ${e.message ?: e::class.java.simpleName}"))
+                saveError = saveError ?: e
+            }
+            saveError?.let {
+                _events.tryEmit(
+                    EngineEvent.Error(
+                        "Impossible d'enregistrer la réponse: ${it.message ?: it::class.java.simpleName}", chat.id,
+                    ),
+                )
             }
             _streaming.update { it - id }
 
@@ -308,11 +355,11 @@ class ChatEngineImpl(
                 if (fwFailure is FireworksException.Unauthorized) {
                     _events.tryEmit(EngineEvent.Unauthorized)
                 } else {
-                    _events.tryEmit(EngineEvent.Error(error ?: "Erreur inattendue"))
+                    _events.tryEmit(EngineEvent.Error(error ?: "Erreur inattendue", chat.id))
                 }
                 if (fwFailure is FireworksException.ModelNotFound) refreshModelsInBackground()
             } else if (status == MessageStatus.ERROR) {
-                _events.tryEmit(EngineEvent.Error(error ?: "Erreur inattendue"))
+                _events.tryEmit(EngineEvent.Error(error ?: "Erreur inattendue", chat.id))
             }
         }
         interrupted?.let { throw it }
