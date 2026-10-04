@@ -146,6 +146,7 @@ private fun AppShell(container: AppContainer, startRoute: String) {
                     container = container,
                     onBack = { navController.popBackStackSafely() },
                     onOpenPrompts = { navController.navigate(Routes.PROMPTS) { launchSingleTop = true } },
+                    onApiKeyRemoved = { navController.navigateToOnboarding() },
                 )
             }
             composable(Routes.PROMPTS) {
@@ -178,6 +179,14 @@ private fun AppShell(container: AppContainer, startRoute: String) {
 /** La pile ne garde qu'un chat à la fois: ouvrir un chat depuis n'importe où repart d'une pile propre. */
 private fun NavHostController.navigateToChat(route: String) {
     navigate(route) {
+        popUpTo(graph.id) { inclusive = true }
+        launchSingleTop = true
+    }
+}
+
+/** Clé supprimée: retour à l'onboarding avec une pile propre (le retour système ne revient pas aux réglages). */
+private fun NavHostController.navigateToOnboarding() {
+    navigate(Routes.ONBOARDING) {
         popUpTo(graph.id) { inclusive = true }
         launchSingleTop = true
     }
