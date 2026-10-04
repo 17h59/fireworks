@@ -32,6 +32,29 @@ class MarkdownBlocksCache(private val maxEntries: Int = 512) {
         return inc.update(text, streaming)
     }
 
+    /**
+     * Le parseur incrémental de [key] (créé au besoin). Permet de PARTAGER le parseur d'un message entre son rendu
+     * en direct ([StreamingMarkdown]) et son rendu final : à la fin du flux, [cachedBlocks] ne re-parse que la fin.
+     */
+    fun incremental(key: Any, streaming: Boolean = false): IncrementalMarkdown =
+        map.getOrPut(key) { IncrementalMarkdown(streaming) }
+
+    /** Range un parseur déjà alimenté (ex. parsé hors du thread principal, voir [MarkdownBlocksLoader]). */
+    fun put(key: Any, parser: IncrementalMarkdown) {
+        map[key] = parser
+    }
+
+    /**
+     * Blocs de [key] SANS rien parser de coûteux : renvoie null si le cache n'a pas de parseur pour [key] ou si
+     * [text] n'est pas un prolongement de son texte (il faudrait alors tout re-parser).
+     * Sinon la mise à jour est incrémentale (quasi gratuite) et définitive (`streaming = false`).
+     */
+    fun cachedBlocks(key: Any, text: String): List<MdBlock>? {
+        val inc = map[key] ?: return null
+        if (!inc.canExtend(text)) return null
+        return inc.update(text, false)
+    }
+
     /** Oublie un message (ex. supprimé). */
     fun remove(key: Any) {
         map.remove(key)
