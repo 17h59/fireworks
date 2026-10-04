@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="generation_channel_name">Réponse en cours</string>
+    <string name="generation_channel_description">Notification discrète affichée pendant qu’une réponse est générée, pour que l’app reste active en arrière-plan.</string>
+    <string name="generation_notification_title">Réponse en cours…</string>
+</resources>
