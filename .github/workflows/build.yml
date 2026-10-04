@@ -4,8 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+# Permissions minimales par défaut; seul le job de publication a besoin d'écrire.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -14,6 +15,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +25,10 @@ jobs:
           java-version: 21
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          # Par défaut le cache n'est écrit que depuis la branche par défaut: on l'écrit aussi
+          # depuis la branche de travail pour que les builds suivants en profitent.
+          cache-read-only: false
 
       - name: Installer les composants du SDK Android
         run: |
@@ -42,16 +48,43 @@ jobs:
           path: fw-chat.apk
           if-no-files-found: error
 
+      # Indispensable pour désobfusquer les traces d'erreur d'une version publiée (R8).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fw-chat-mapping
+          path: app/build/outputs/mapping/release/mapping.txt
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref_name == 'claude/android-fireworks-app-i6l3wr' || github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    # Un seul déplacement du tag « latest » à la fois, sans annuler une publication en cours.
+    concurrency:
+      group: publish-latest
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fw-chat-apk
+
       - name: Publier la pre-release "latest"
-        if: github.ref_name == 'claude/android-fireworks-app-i6l3wr' || github.ref_name == 'main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # `gh release edit --target` ne déplace pas un tag existant: on le force sur le commit courant.
+          git tag -f latest "$GITHUB_SHA"
+          git push -f origin latest
           NOTES="Build automatique du commit ${GITHUB_SHA::7} (branche ${GITHUB_REF_NAME}). Téléchargez fw-chat.apk et installez-le."
           if gh release view latest >/dev/null 2>&1; then
-            gh release edit latest --prerelease --target "$GITHUB_SHA" --notes "$NOTES"
+            gh release edit latest --prerelease --notes "$NOTES"
           else
-            gh release create latest --prerelease --target "$GITHUB_SHA" \
+            gh release create latest --prerelease --verify-tag \
               --title "FW Chat (dernier build)" --notes "$NOTES"
           fi
           gh release upload latest fw-chat.apk --clobber
