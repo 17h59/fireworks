@@ -27,12 +27,12 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatEngineImplTest {
 
-    private class Env(val test: TestScope) {
+    private class Env(val test: TestScope, awaitReady: suspend () -> Unit = {}) {
         val chats = FakeChatRepository()
         val models = FakeModelRepository()
         val settings = FakeSettings()
         val api = FakeFireworksApi()
-        val engine = ChatEngineImpl(chats, models, settings, api, test)
+        val engine = ChatEngineImpl(chats, models, settings, api, test, awaitReady = awaitReady)
         val events = mutableListOf<EngineEvent>()
 
         init {
@@ -40,7 +40,7 @@ class ChatEngineImplTest {
         }
     }
 
-    private fun TestScope.env() = Env(this)
+    private fun TestScope.env(awaitReady: suspend () -> Unit = {}) = Env(this, awaitReady)
 
     private fun script(vararg ev: StreamEvent) = flow { ev.forEach { emit(it) } }
 
@@ -350,5 +350,248 @@ class ChatEngineImplTest {
         assertEquals(3, e.api.requests.size)
         advanceUntilIdle()
         assertEquals(2, e.chats.assistants(c1).size)
+    }
+
+    // ------------------------------------------------------------ robustesse
+
+    @Test
+    fun stopDuringSetupLeavesNoStreamingMessage() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        // Le placeholder est committé, puis la création « traîne » avant de rendre la main.
+        e.chats.afterPlaceholderCommitted = { delay(100) }
+        e.api.handler = { flow { awaitCancellation() } }
+
+        e.engine.send(chatId, "x")
+        runCurrent()
+        assertEquals(MessageStatus.STREAMING, e.chats.assistants(chatId).single().status)
+        e.engine.stop(chatId)
+        advanceUntilIdle()
+
+        val a = e.chats.assistants(chatId).single()
+        assertEquals(MessageStatus.INTERRUPTED, a.status)
+        assertTrue(e.engine.streaming.value.isEmpty())
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+        assertTrue(e.events.isEmpty())
+    }
+
+    @Test
+    fun stopDuringSetupOfRegenerateLeavesNoStreamingMessage() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        val u1 = e.chats.add(chatId, null, Role.USER, "Q1")
+        val a1 = e.chats.add(chatId, u1.id, Role.ASSISTANT, "R1")
+        e.chats.afterPlaceholderCommitted = { delay(100) }
+        e.api.handler = { flow { awaitCancellation() } }
+
+        e.engine.regenerate(a1.id)
+        runCurrent()
+        e.engine.stop(chatId)
+        advanceUntilIdle()
+
+        assertTrue(e.chats.assistants(chatId).none { it.status == MessageStatus.STREAMING })
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+    }
+
+    @Test
+    fun deleteChatDuringGenerationEndsCleanly() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        val gate = CompletableDeferred<Unit>()
+        e.api.handler = {
+            flow {
+                emit(StreamEvent.ContentDelta("début"))
+                gate.await()
+                emit(StreamEvent.ContentDelta(" suite"))
+                emit(StreamEvent.Finish("stop"))
+            }
+        }
+        e.engine.send(chatId, "x")
+        advanceTimeBy(100)
+        assertEquals(setOf(chatId), e.engine.generatingChats.value)
+
+        e.chats.deleteChat(chatId)
+        gate.complete(Unit)
+        advanceUntilIdle()
+
+        assertTrue(e.chats.messages.isEmpty())
+        assertTrue(e.engine.streaming.value.isEmpty())
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+        assertTrue(e.events.isEmpty())
+    }
+
+    @Test
+    fun finalUpdateStreamingFailureStillFinishesTheMessage() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        e.chats.updateStreamingError = java.io.IOException("disque plein")
+        e.api.handler = { script(StreamEvent.ContentDelta("ok"), StreamEvent.Usage(3, 2, null), StreamEvent.Finish("stop")) }
+
+        e.engine.send(chatId, "x")
+        advanceUntilIdle()
+
+        val a = e.chats.assistants(chatId).single()
+        // Plus de message bloqué en STREAMING: finishMessage a été tenté malgré l'échec de l'écriture finale.
+        assertEquals(MessageStatus.COMPLETE, a.status)
+        assertEquals(2, a.completionTokens)
+        assertTrue(e.engine.streaming.value.isEmpty())
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+        val err = e.events.single() as EngineEvent.Error
+        assertTrue(err.message.startsWith("Impossible d'enregistrer"))
+        assertEquals(chatId, err.chatId)
+    }
+
+    @Test
+    fun editAndResendIsRefusedWhileChatIsBusy() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        val u1 = e.chats.add(chatId, null, Role.USER, "Q1")
+        val gate = CompletableDeferred<Unit>()
+        e.api.handler = { flow { gate.await(); emit(StreamEvent.ContentDelta("ok")); emit(StreamEvent.Finish("stop")) } }
+        e.engine.send(chatId, "Q2")
+        runCurrent()
+        val before = e.chats.messages.size
+
+        e.engine.editAndResend(u1.id, "Q1 corrigée")
+        runCurrent()
+
+        assertEquals(before, e.chats.messages.size)
+        assertEquals(1, e.api.requests.size)
+        val err = e.events.single() as EngineEvent.Error
+        assertEquals(chatId, err.chatId)
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        // La génération en cours n'est pas perturbée par le refus.
+        assertEquals(MessageStatus.COMPLETE, e.chats.assistants(chatId).single().status)
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+    }
+
+    @Test
+    fun regenerateIsRefusedWhileChatIsBusy() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        val u1 = e.chats.add(chatId, null, Role.USER, "Q1")
+        val a1 = e.chats.add(chatId, u1.id, Role.ASSISTANT, "R1")
+        val gate = CompletableDeferred<Unit>()
+        e.api.handler = { flow { gate.await(); emit(StreamEvent.ContentDelta("ok")); emit(StreamEvent.Finish("stop")) } }
+        e.engine.send(chatId, "Q2")
+        runCurrent()
+        val before = e.chats.messages.size
+
+        e.engine.regenerate(a1.id)
+        runCurrent()
+
+        assertEquals(before, e.chats.messages.size)
+        assertEquals(1, e.api.requests.size)
+        assertEquals(chatId, (e.events.single() as EngineEvent.Error).chatId)
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+    }
+
+    @Test
+    fun generationWaitsForRecoverInterruptedSoItNeverMarksALiveMessage() = runTest {
+        val ready = CompletableDeferred<Unit>()
+        val e = env(awaitReady = { ready.await() })
+        // Message resté STREAMING d'une exécution précédente (process tué), dans un autre chat.
+        val oldChat = e.chats.addChat()
+        val oldUser = e.chats.add(oldChat, null, Role.USER, "avant")
+        val orphan = e.chats.add(oldChat, oldUser.id, Role.ASSISTANT, "partiel", MessageStatus.STREAMING)
+        val chatId = e.chats.addChat()
+        e.api.handler = { flow { delay(50); emit(StreamEvent.ContentDelta("ok")); emit(StreamEvent.Finish("stop")) } }
+
+        e.engine.send(chatId, "x")
+        runCurrent()
+        // En attente: aucun message créé, aucune requête, mais le chat est déjà marqué occupé.
+        assertTrue(e.chats.messages.values.none { it.chatId == chatId })
+        assertEquals(0, e.api.requests.size)
+        assertEquals(setOf(chatId), e.engine.generatingChats.value)
+
+        e.chats.recoverInterrupted()
+        ready.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(MessageStatus.INTERRUPTED, e.chats.msg(orphan.id).status)
+        val a = e.chats.assistants(chatId).single()
+        assertEquals(MessageStatus.COMPLETE, a.status)
+        assertEquals("ok", a.content)
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+    }
+
+    @Test
+    fun stopWhileWaitingForReadinessCreatesNothing() = runTest {
+        val ready = CompletableDeferred<Unit>()
+        val e = env(awaitReady = { ready.await() })
+        val chatId = e.chats.addChat()
+        e.engine.send(chatId, "x")
+        runCurrent()
+        e.engine.stop(chatId)
+        advanceUntilIdle()
+        assertTrue(e.chats.messages.isEmpty())
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+    }
+
+    // ------------------------------------------------------------ erreurs étiquetées par chat
+
+    @Test
+    fun busyErrorCarriesTheChatId() = runTest {
+        val e = env()
+        val c1 = e.chats.addChat()
+        val gate = CompletableDeferred<Unit>()
+        e.api.handler = { flow { gate.await(); emit(StreamEvent.Finish("stop")) } }
+        e.engine.send(c1, "a")
+        e.engine.send(c1, "b")
+        runCurrent()
+        assertEquals(c1, (e.events.single() as EngineEvent.Error).chatId)
+        gate.complete(Unit)
+        advanceUntilIdle()
+    }
+
+    @Test
+    fun generationErrorCarriesTheChatId() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        e.api.handler = { flow { throw FireworksException.InsufficientCredit("no credit") } }
+        e.engine.send(chatId, "x")
+        advanceUntilIdle()
+        assertEquals(chatId, (e.events.single() as EngineEvent.Error).chatId)
+    }
+
+    @Test
+    fun emptyAnswerErrorCarriesTheChatId() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        e.api.handler = { script(StreamEvent.Finish("stop")) }
+        e.engine.send(chatId, "x")
+        advanceUntilIdle()
+        assertEquals(chatId, (e.events.single() as EngineEvent.Error).chatId)
+    }
+
+    @Test
+    fun internalErrorInSendCarriesTheChatId() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        e.chats.writeError = IllegalStateException("base fermée")
+        e.engine.send(chatId, "x")
+        advanceUntilIdle()
+        val err = e.events.single() as EngineEvent.Error
+        assertTrue(err.message.startsWith("Erreur interne"))
+        assertEquals(chatId, err.chatId)
+        assertTrue(e.engine.generatingChats.value.isEmpty())
+    }
+
+    @Test
+    fun internalErrorInEditAndResendCarriesTheChatId() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat()
+        val u1 = e.chats.add(chatId, null, Role.USER, "Q1")
+        e.chats.writeError = IllegalStateException("base fermée")
+        e.engine.editAndResend(u1.id, "Q1 bis")
+        advanceUntilIdle()
+        val err = e.events.single() as EngineEvent.Error
+        assertEquals(chatId, err.chatId)
+        assertTrue(e.engine.generatingChats.value.isEmpty())
     }
 }

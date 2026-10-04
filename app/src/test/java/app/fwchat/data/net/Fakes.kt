@@ -81,6 +81,13 @@ class FakeChatRepository : ChatRepository {
     val chats = LinkedHashMap<String, Chat>()
     val messages = LinkedHashMap<String, Message>()
     var updateStreamingCalls = 0
+    /** Si non null, [updateStreaming] lève cette exception (après avoir compté l'appel). */
+    var updateStreamingError: Exception? = null
+    /** Si non null, [addUserMessage] et [editUserAsBranch] lèvent cette exception. */
+    var writeError: Exception? = null
+    /** Exécuté APRÈS le commit du placeholder, avant le retour (simule le délai commit Room -> retour). */
+    var afterPlaceholderCommitted: (suspend () -> Unit)? = null
+    var recoverCalls = 0
     private var seq = 0
     private var clock = 1000L
 
@@ -139,31 +146,42 @@ class FakeChatRepository : ChatRepository {
 
     override suspend fun createChat(modelId: String, systemPrompt: SystemPrompt?, params: GenParams): String = TODO()
     override suspend fun renameChat(chatId: String, title: String) = TODO()
-    override suspend fun deleteChat(chatId: String) = TODO()
+    override suspend fun deleteChat(chatId: String) {
+        chats.remove(chatId)
+        messages.keys.filter { messages.getValue(it).chatId == chatId }.forEach { messages.remove(it) }
+    }
     override suspend fun updateChatSettings(chatId: String, modelId: String?, params: GenParams?) {
         val c = chats.getValue(chatId)
         chats[chatId] = c.copy(modelId = modelId ?: c.modelId, params = params ?: c.params)
     }
     override suspend fun fork(chatId: String, uptoMessageId: String): String = TODO()
 
-    override suspend fun addUserMessage(chatId: String, parentId: String?, content: String) =
-        add(chatId, parentId, Role.USER, content)
+    override suspend fun addUserMessage(chatId: String, parentId: String?, content: String): Message {
+        writeError?.let { throw it }
+        return add(chatId, parentId, Role.USER, content)
+    }
 
-    override suspend fun addAssistantPlaceholder(chatId: String, parentId: String, modelId: String) =
-        add(chatId, parentId, Role.ASSISTANT, "", MessageStatus.STREAMING).let {
+    override suspend fun addAssistantPlaceholder(chatId: String, parentId: String, modelId: String): Message {
+        val created = add(chatId, parentId, Role.ASSISTANT, "", MessageStatus.STREAMING).let {
             messages[it.id] = it.copy(modelId = modelId); messages.getValue(it.id)
         }
+        afterPlaceholderCommitted?.invoke()
+        return created
+    }
 
+    // Comme Room: une mise à jour sur une ligne disparue (chat supprimé) est sans effet.
     override suspend fun updateStreaming(messageId: String, content: String, reasoning: String?) {
         updateStreamingCalls++
-        messages[messageId] = messages.getValue(messageId).copy(content = content, reasoning = reasoning)
+        updateStreamingError?.let { throw it }
+        messages[messageId]?.let { messages[messageId] = it.copy(content = content, reasoning = reasoning) }
     }
 
     override suspend fun finishMessage(
         messageId: String, status: MessageStatus, finishReason: String?, error: String?,
         promptTokens: Int?, completionTokens: Int?, reasoningTokens: Int?,
     ) {
-        messages[messageId] = messages.getValue(messageId).copy(
+        val m = messages[messageId] ?: return
+        messages[messageId] = m.copy(
             status = status, finishReason = finishReason, error = error,
             promptTokens = promptTokens, completionTokens = completionTokens, reasoningTokens = reasoningTokens,
         )
@@ -172,6 +190,7 @@ class FakeChatRepository : ChatRepository {
     override suspend fun editInPlace(messageId: String, content: String) = TODO()
 
     override suspend fun editUserAsBranch(messageId: String, newContent: String): Message {
+        writeError?.let { throw it }
         val old = messages.getValue(messageId)
         return add(old.chatId, old.parentId, Role.USER, newContent)
     }
@@ -183,7 +202,13 @@ class FakeChatRepository : ChatRepository {
 
     override suspend fun selectSibling(messageId: String) = TODO()
     override suspend fun deleteSubtree(messageId: String) = TODO()
-    override suspend fun recoverInterrupted() = TODO()
+    override suspend fun recoverInterrupted() {
+        recoverCalls++
+        messages.keys.toList().forEach { id ->
+            val m = messages.getValue(id)
+            if (m.status == MessageStatus.STREAMING) messages[id] = m.copy(status = MessageStatus.INTERRUPTED)
+        }
+    }
     override suspend fun exportAll(): String = TODO()
     override suspend fun importAll(json: String, replace: Boolean) = TODO()
 }
