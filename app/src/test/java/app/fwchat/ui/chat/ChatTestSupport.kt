@@ -40,7 +40,18 @@ class MemChatRepo(val log: MutableList<String> = mutableListOf()) : ChatReposito
     val deletedSubtrees = mutableListOf<String>()
     val renames = mutableListOf<Pair<String, String>>()
 
+    /** Si non null, `createChat` lève cette exception (test de non-perte du brouillon). */
+    var createFailure: Exception? = null
+    var threadFailure: Exception? = null
+    var chatFailure: Exception? = null
+
     private fun changed() { tick.value = tick.value + 1 }
+
+    /** Modifie un message (comme le ferait le moteur) et notifie les observateurs. */
+    fun modify(id: String, f: (Message) -> Message) {
+        replace(id, f)
+        changed()
+    }
     private fun now() = ++clock
 
     fun addMessage(chatId: String, parent: String?, role: Role, content: String, status: MessageStatus = MessageStatus.COMPLETE): Message {
@@ -70,8 +81,9 @@ class MemChatRepo(val log: MutableList<String> = mutableListOf()) : ChatReposito
     }
 
     override fun observeChatSummaries(query: String): Flow<List<ChatSummary>> = emptyFlow()
-    override fun observeChat(chatId: String): Flow<Chat?> = tick.map { chats[chatId] }
+    override fun observeChat(chatId: String): Flow<Chat?> = tick.map { chatFailure?.let { e -> throw e }; chats[chatId] }
     override fun observeThread(chatId: String): Flow<List<ThreadItem>> = tick.map {
+        threadFailure?.let { e -> throw e }
         ThreadLogic.activeThread(msgs.filter { it.chatId == chatId }, chats[chatId]?.selectedRootId)
     }
 
@@ -82,6 +94,7 @@ class MemChatRepo(val log: MutableList<String> = mutableListOf()) : ChatReposito
 
     override suspend fun createChat(modelId: String, systemPrompt: SystemPrompt?, params: GenParams): String {
         log += "create"
+        createFailure?.let { throw it }
         created += Created(modelId, systemPrompt, params)
         val id = "c${++seq}"
         chats[id] = Chat(id, "", modelId, systemPrompt?.name, systemPrompt?.text, params, null, now(), now())

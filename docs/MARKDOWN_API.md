@@ -137,6 +137,41 @@ Points importants :
 un message courant < 1 ms). Pour un message statique géant on peut appeler `parseMarkdown(text)` dans une coroutine
 `Dispatchers.Default` puis passer la liste à `markdownItems`. (`rememberMarkdownBlocks` le fait déjà tout seul au-delà de 60 000 caractères en mode non-streaming.)
 
+## Très gros textes : message en cours et parse hors thread principal
+
+Ajouts pour garder la liste fluide avec des réponses de 100–300 Ko (utilisés par `ui.chat.MessageList`) :
+
+```kotlin
+// IncrementalMarkdown : nombre de blocs de tête jamais re-parsés (fermés) ; test de prolongement sans parser
+val stableCount: Int
+fun canExtend(newText: String): Boolean
+
+// Message en cours : n'émettre en items QUE les blocs fermés ; le dernier bloc (ouvert) dans UN item vivant
+class StreamingMarkdown(parser: IncrementalMarkdown = IncrementalMarkdown(true)) {
+    fun parts(text: String): StreamParts                       // mémoïsé ; parts.liveBlock / parts.liveFromSlice
+    fun stableState(text: () -> String): State<StreamStable>   // ne change que quand un bloc (ou une tranche) se ferme
+}
+fun splitStreamingBlocks(blocks: List<MdBlock>): StreamParts   // pure, testable
+fun LazyListScope.markdownItems(..., lastBlockSlices: Int = Int.MAX_VALUE)   // tranches max du dernier bloc
+@Composable fun MarkdownTail(block: MdBlock, fromSlice: Int, style: MarkdownStyle, modifier: Modifier = Modifier)
+fun lazySliceCount(block: MdBlock): Int
+
+// Cache : partager le parseur live avec le rendu final (fin de flux = re-parse de la fin seulement)
+MarkdownBlocksCache.incremental(key, streaming) / put(key, parser) / cachedBlocks(key, text): List<MdBlock>?
+
+// Gros texte statique : parse sur Dispatchers.Default ; null (afficher du texte brut) tant que ce n'est pas prêt
+class MarkdownBlocksLoader(cache: MarkdownBlocksCache, scope: CoroutineScope) {
+    fun blocks(key: Any, text: String): List<MdBlock>?   // lu dans le lambda de la LazyColumn (relancé à la fin du parse)
+    fun prefetch(key: Any, text: String)
+}
+```
+
+Schéma dans la `LazyColumn` : `val stable = entry.stable.value` (état dérivé, lu dans le lambda) →
+`markdownItems(key, stable.blocks, style, lastBlockSlices = stable.lastBlockSlices)` puis
+`item(key = "$key:live") { /* lit le texte live */ MarkdownTail(parts.liveBlock, parts.liveFromSlice, style) }`.
+Un gros bloc de code ouvert est découpé : ses tranches de 80 lignes déjà complètes deviennent des items stables,
+seule la dernière tranche (≤ 80 lignes) est recomposée à chaque publication.
+
 ## Petits textes : `MarkdownText`
 
 ```kotlin

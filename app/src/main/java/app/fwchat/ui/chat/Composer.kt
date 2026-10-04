@@ -2,6 +2,11 @@ package app.fwchat.ui.chat
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -49,7 +54,12 @@ internal fun Composer(
     ) {
         Row(
             // Insets DANS la surface: son fond couvre aussi la zone sous la barre de navigation.
-            Modifier.imePadding().navigationBarsPadding().padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 8.dp),
+            Modifier
+                .imePadding()
+                .navigationBarsPadding()
+                // Paysage: encoche / barres latérales restantes (déjà consommées par navigationBarsPadding exclues).
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                .padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 8.dp),
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {

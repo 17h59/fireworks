@@ -1,8 +1,13 @@
 package app.fwchat.ui.chat
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -10,8 +15,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -118,7 +128,13 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val following = rememberSaveable { mutableStateOf(true) }
 
-    var draftText by rememberSaveable { mutableStateOf("") }
+    // Brouillon de saisie: jamais plus de 50 000 caractères dans le Bundle (TransactionTooLargeException au
+    // onSaveInstanceState); au-delà, la copie du ViewModel prend le relais (rotation) — pas la mort du processus.
+    var draftText by rememberSaveable(stateSaver = BoundedTextSaver) { mutableStateOf(vm.draftBackup) }
+    fun setDraft(text: String) {
+        draftText = text
+        vm.draftBackup = text
+    }
     var showModels by rememberSaveable { mutableStateOf(false) }
     var showPrompts by rememberSaveable { mutableStateOf(false) }
     var showParams by rememberSaveable { mutableStateOf(false) }
@@ -135,13 +151,33 @@ fun ChatScreen(
         toast(if (copyToClipboard(context, text)) confirmation else "Copie impossible (texte trop volumineux ?)")
     }
 
+    // Notifications (service de premier plan « Réponse en cours… »): demandées UNE fois, au premier envoi; ne bloque jamais l'envoi.
+    val uiPrefs = remember(context) { context.getSharedPreferences("fwchat_ui", Context.MODE_PRIVATE) }
+    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    fun askNotificationPermissionOnce() {
+        try {
+            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+            val asked = uiPrefs.getBoolean(PREF_NOTIFICATION_ASKED, false)
+            if (!shouldAskNotificationPermission(granted, asked)) return
+            uiPrefs.edit().putBoolean(PREF_NOTIFICATION_ASKED, true).apply() // refus mémorisé: jamais en boucle
+            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } catch (e: Exception) {
+            // la notification est un confort: ne jamais gêner l'envoi
+        }
+    }
+
     val currentOnChatCreated by rememberUpdatedState(onChatCreated)
     val currentOnOpenSettings by rememberUpdatedState(onOpenSettings)
 
     LaunchedEffect(vm) {
         vm.events.collect { event ->
             when (event) {
-                is ChatUiEvent.OpenChat -> currentOnChatCreated(event.chatId)
+                is ChatUiEvent.OpenChat -> {
+                    // Brouillon: le chat est créé pour de bon, le texte peut partir (jamais avant: createChat peut échouer).
+                    if (event.fromDraft) setDraft("")
+                    currentOnChatCreated(event.chatId)
+                }
                 is ChatUiEvent.CopyText -> copy(event.text, event.confirmation)
                 is ChatUiEvent.Notice -> toast(event.message)
                 ChatUiEvent.ScrollToBottom -> {
@@ -187,6 +223,10 @@ fun ChatScreen(
                 following.value = true
                 vm.regenerate(id)
             },
+            onRetry = { id ->
+                following.value = true
+                vm.retry(id)
+            },
             onFork = vm::fork,
             onDelete = { id -> deleteTarget = id },
             onSibling = vm::selectSibling,
@@ -205,6 +245,7 @@ fun ChatScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
+                windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
                 title = {
                     Text(
                         text = ui.title.ifBlank { "Nouveau chat" },
@@ -252,13 +293,24 @@ fun ChatScreen(
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            // Paysage: encoche et barres système sur les côtés (le composer gère les siens).
+            val sideInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)
             ChatPills(
                 ui = ui,
                 onModel = { showModels = true },
                 onPrompt = { if (ui.promptLocked) showPromptText = true else showPrompts = true },
+                modifier = Modifier.windowInsetsPadding(sideInsets),
             )
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (ui.notFound) {
+            Box(Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(sideInsets)) {
+                if (ui.loadError) {
+                    Text(
+                        "Impossible d'afficher ce chat.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.Center).padding(32.dp),
+                    )
+                } else if (ui.notFound) {
                     Text(
                         "Cette conversation n'existe plus.",
                         style = MaterialTheme.typography.bodyLarge,
@@ -274,6 +326,7 @@ fun ChatScreen(
                         listState = listState,
                         following = following,
                         modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
                     )
                     if (ui.thread.isEmpty() && ui.loaded) {
                         EmptyState(ui, Modifier.align(Alignment.Center))
@@ -291,14 +344,15 @@ fun ChatScreen(
             }
             Composer(
                 text = draftText,
-                onTextChange = { draftText = it },
+                onTextChange = ::setDraft,
                 generating = ui.generating,
                 sendEnabled = draftText.isNotBlank() && !ui.generating && (if (ui.isDraft) ui.loaded else ui.canSend),
                 onSend = {
-                    if (vm.send(draftText)) {
-                        draftText = ""
-                        following.value = true
-                    }
+                    askNotificationPermissionOnce()
+                    val accepted = vm.send(draftText)
+                    // Brouillon: le champ n'est vidé qu'à la création effective du chat (OpenChat), pas avant.
+                    if (clearsDraftImmediately(ui.isDraft, accepted)) setDraft("")
+                    if (accepted) following.value = true
                 },
                 onStop = vm::stop,
             )
@@ -385,6 +439,8 @@ fun ChatScreen(
 
 // ------------------------------------------------------------------------------------------------
 
+private const val PREF_NOTIFICATION_ASKED = "notification_permission_asked"
+
 private fun copyToClipboard(context: Context, text: String): Boolean = try {
     val manager = context.getSystemService(ClipboardManager::class.java)
     manager.setPrimaryClip(ClipData.newPlainText("FW Chat", text))
@@ -396,11 +452,11 @@ private fun copyToClipboard(context: Context, text: String): Boolean = try {
 /** Pastilles [Modèle] et [Prompt système] sous la barre du haut. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ChatPills(ui: ChatUiState, onModel: () -> Unit, onPrompt: () -> Unit) {
+private fun ChatPills(ui: ChatUiState, onModel: () -> Unit, onPrompt: () -> Unit, modifier: Modifier = Modifier) {
     val container = MaterialTheme.colorScheme.surfaceContainerHigh
     val colors = AssistChipDefaults.assistChipColors(containerColor = container)
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        modifier.fillMaxWidth().padding(horizontal = 12.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -38,11 +38,20 @@ class IncrementalMarkdown(private val defaultStreaming: Boolean = true) {
     private var initialized = false
     private var all = ArrayList<MdBlock>()
     private var starts = IntList()
-    private var stableCount = 0
     private var snapshot: List<MdBlock> = emptyList()
+
+    /**
+     * Nombre de blocs de tête de [blocks] qui ne seront plus jamais re-parsés tant que le texte ne fait que grandir
+     * (blocs « fermés »). Toujours strictement inférieur à `blocks.size` quand il y a des blocs.
+     */
+    var stableCount = 0
+        private set
 
     /** Dernier résultat de [update]. */
     val blocks: List<MdBlock> get() = snapshot
+
+    /** true si [newText] prolonge exactement le texte déjà parsé: [update] sera alors incrémental (pas de re-parse complet). */
+    fun canExtend(newText: String): Boolean = initialized && newText.startsWith(text)
 
     /** Oublie tout l'état (le prochain [update] re-parse en entier). */
     fun reset() {

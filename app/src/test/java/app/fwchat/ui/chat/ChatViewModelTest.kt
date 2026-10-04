@@ -111,7 +111,7 @@ class ChatViewModelTest {
         vm.events.test {
             assertTrue(vm.send("Bonjour"))
             advanceUntilIdle()
-            assertEquals(ChatUiEvent.OpenChat("c1"), awaitItem())
+            assertEquals(ChatUiEvent.OpenChat("c1", fromDraft = true), awaitItem())
         }
 
         val created = repo.created.single()
