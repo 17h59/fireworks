@@ -90,7 +90,19 @@ data class MdTable(
     val aligns: List<MdAlign>,
     val header: List<List<MdInline>>,
     val rows: List<List<List<MdInline>>>,
-) : MdBlock()
+) : MdBlock() {
+    /** Largeur estimée (en caractères, plafonnée) de chaque colonne : sert à aligner les morceaux d'un gros tableau. */
+    @Transient private var colCharsCache: IntArray? = null
+    internal val colChars: IntArray
+        get() = colCharsCache ?: IntArray(aligns.size) { c ->
+            var m = inlineLength(header[c])
+            for (r in rows) {
+                val l = inlineLength(r[c])
+                if (l > m) m = l
+            }
+            m.coerceAtMost(MAX_COL_CHARS)
+        }.also { colCharsCache = it }
+}
 
 /** Séparateur horizontal (`---`). */
 data object MdRule : MdBlock()
@@ -100,6 +112,7 @@ data object MdRule : MdBlock()
 internal const val PARAGRAPH_CHUNK_CHARS = 6000
 internal const val CODE_CHUNK_LINES = 80
 internal const val TABLE_CHUNK_ROWS = 40
+internal const val MAX_COL_CHARS = 32
 
 internal fun computeLineStarts(s: String): IntArray {
     var count = 1
