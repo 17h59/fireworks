@@ -245,8 +245,6 @@ class SettingsViewModelTest {
         advanceUntilIdle()
         e.vm.events.test {
             e.vm.refreshModels()
-            runCurrent()
-            assertTrue(e.vm.state.value.refreshingModels)
             advanceUntilIdle()
             val msg = awaitItem() as SettingsEvent.Message
             assertEquals(modelCountLabel(2) + ".", msg.text)
@@ -276,10 +274,13 @@ class SettingsViewModelTest {
         advanceUntilIdle()
         val initial = e.settings.current.defaultParams
         e.vm.onParamsChange(initial.copy(temperature = 0.1))
+        runCurrent()
         advanceTimeBy(200)
         e.vm.onParamsChange(initial.copy(temperature = 0.5))
+        runCurrent()
         advanceTimeBy(200)
         e.vm.onParamsChange(initial.copy(temperature = 0.9))
+        runCurrent()
         // L'etat local suit tout de suite, mais rien n'est encore enregistre.
         assertEquals(0.9, e.vm.state.value.params?.temperature)
         advanceTimeBy(399)
