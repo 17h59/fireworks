@@ -17,3 +17,4 @@ captures/
 
 # Le keystore de debug est volontairement versionné (voir README)
 !app/debug.keystore
+.kotlin/
