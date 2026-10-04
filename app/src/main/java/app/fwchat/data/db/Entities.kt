@@ -34,7 +34,7 @@ data class ChatEntity(
             onDelete = ForeignKey.CASCADE,
         ),
     ],
-    indices = [Index("chatId", "createdAt"), Index("parentId")],
+    indices = [Index("chatId", "createdAt")],
 )
 data class MessageEntity(
     @PrimaryKey val id: String,

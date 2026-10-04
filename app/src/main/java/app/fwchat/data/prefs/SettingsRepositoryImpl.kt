@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
+import app.fwchat.data.decodeParamsOrNull
+import app.fwchat.data.encodeParams
 import app.fwchat.domain.AppDefaults
 import app.fwchat.domain.AppSettings
 import app.fwchat.domain.GenParams
@@ -15,7 +17,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.serialization.json.Json
 import java.io.IOException
 
 /**
@@ -34,7 +35,7 @@ class SettingsRepositoryImpl(
                 hasApiKey = p[HAS_API_KEY] ?: false,
                 defaultModelId = p[DEFAULT_MODEL_ID],
                 defaultSystemPromptId = p[DEFAULT_SYSTEM_PROMPT_ID],
-                defaultParams = p[DEFAULT_PARAMS]?.let(::decodeParams) ?: AppDefaults.GEN_PARAMS,
+                defaultParams = p[DEFAULT_PARAMS]?.let(::decodeParamsOrNull) ?: AppDefaults.GEN_PARAMS,
             )
         }
 
@@ -103,21 +104,13 @@ class SettingsRepositoryImpl(
     }
 
     override suspend fun setDefaultParams(params: GenParams) {
-        dataStore.edit { it[DEFAULT_PARAMS] = json.encodeToString(GenParams.serializer(), params) }
+        dataStore.edit { it[DEFAULT_PARAMS] = encodeParams(params) }
     }
-
-    private fun decodeParams(s: String): GenParams? =
-        try {
-            json.decodeFromString(GenParams.serializer(), s)
-        } catch (e: Exception) {
-            null
-        }
 
     private companion object {
         val HAS_API_KEY = booleanPreferencesKey("has_api_key")
         val DEFAULT_MODEL_ID = stringPreferencesKey("default_model_id")
         val DEFAULT_SYSTEM_PROMPT_ID = stringPreferencesKey("default_system_prompt_id")
         val DEFAULT_PARAMS = stringPreferencesKey("default_params_json")
-        val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; coerceInputValues = true }
     }
 }

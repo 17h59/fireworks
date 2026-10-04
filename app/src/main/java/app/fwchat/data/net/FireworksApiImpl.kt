@@ -1,5 +1,6 @@
 package app.fwchat.data.net
 
+import app.fwchat.data.DataJson
 import app.fwchat.domain.ChatRequest
 import app.fwchat.domain.FireworksApi
 import app.fwchat.domain.FireworksException
@@ -109,7 +110,7 @@ class FireworksApiImpl(
     }
 
     private fun parseObject(body: String): JsonObject = try {
-        LenientJson.parseToJsonElement(body) as? JsonObject ?: throw IllegalArgumentException("not an object")
+        DataJson.parseToJsonElement(body) as? JsonObject ?: throw IllegalArgumentException("not an object")
     } catch (e: Exception) {
         throw FireworksException.Network(IOException("Réponse illisible du serveur", e))
     }
@@ -225,7 +226,7 @@ class FireworksApiImpl(
                 finish()
                 return
             }
-            val obj = runCatching { LenientJson.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return
+            val obj = runCatching { DataJson.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return
             // Erreur embarquée dans le flux.
             if (obj["error"] != null && obj["choices"] == null) {
                 fail(mapError(0, payload))

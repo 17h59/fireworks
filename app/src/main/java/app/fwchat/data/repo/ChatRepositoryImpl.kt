@@ -3,11 +3,11 @@ package app.fwchat.data.repo
 import androidx.room.withTransaction
 import app.fwchat.data.db.AppDatabase
 import app.fwchat.data.db.ChatEntity
-import app.fwchat.data.db.DataJson
+import app.fwchat.data.DataJson
 import app.fwchat.data.db.MessageEntity
 import app.fwchat.data.db.SystemPromptEntity
 import app.fwchat.data.db.decodeParams
-import app.fwchat.data.db.encodeParams
+import app.fwchat.data.encodeParams
 import app.fwchat.data.db.toDomain
 import app.fwchat.data.db.toEntity
 import app.fwchat.domain.Chat

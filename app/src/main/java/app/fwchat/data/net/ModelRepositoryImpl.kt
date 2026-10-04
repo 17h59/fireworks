@@ -1,5 +1,6 @@
 package app.fwchat.data.net
 
+import app.fwchat.data.DataJson
 import app.fwchat.domain.FireworksApi
 import app.fwchat.domain.FireworksException
 import app.fwchat.domain.ModelInfo
@@ -43,7 +44,7 @@ class FileModelCache(private val file: File) : ModelCache {
     override suspend fun read(): List<ModelInfo>? = withContext(Dispatchers.IO) {
         try {
             if (!file.isFile) return@withContext null
-            LenientJson.decodeFromString(Payload.serializer(), file.readText()).models.map {
+            DataJson.decodeFromString(Payload.serializer(), file.readText()).models.map {
                 ModelInfo(it.id, it.displayName, it.contextLength, it.supportsImageInput, it.supportsTools)
             }
         } catch (e: Exception) {
@@ -57,7 +58,7 @@ class FileModelCache(private val file: File) : ModelCache {
             models = models.map { Entry(it.id, it.displayName, it.contextLength, it.supportsImageInput, it.supportsTools) },
         )
         val tmp = File(file.absolutePath + ".tmp")
-        tmp.writeText(LenientJson.encodeToString(Payload.serializer(), payload))
+        tmp.writeText(DataJson.encodeToString(Payload.serializer(), payload))
         if (!tmp.renameTo(file)) {
             file.writeText(tmp.readText())
             tmp.delete()

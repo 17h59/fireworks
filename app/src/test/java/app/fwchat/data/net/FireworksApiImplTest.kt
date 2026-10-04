@@ -1,5 +1,6 @@
 package app.fwchat.data.net
 
+import app.fwchat.data.DataJson
 import app.fwchat.domain.ApiMessage
 import app.fwchat.domain.ChatRequest
 import app.fwchat.domain.FireworksException
@@ -180,7 +181,7 @@ class FireworksApiImplTest {
     fun requestBodyOnlyContainsNonNullParams() = runBlocking {
         server.enqueue(sse(chunk("""{"content":"a"}""", "stop"), "[DONE]"))
         collect()
-        val body = LenientJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        val body = DataJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
         assertEquals("accounts/fireworks/models/m", body["model"]!!.jsonPrimitive.content)
         assertTrue(body["stream"]!!.jsonPrimitive.boolean)
         assertTrue(body["stream_options"]!!.jsonObject["include_usage"]!!.jsonPrimitive.boolean)
@@ -202,7 +203,7 @@ class FireworksApiImplTest {
             reasoningEffort = ReasoningEffort.HIGH,
         )
         api.streamChat("KEY", request.copy(params = full)).toList()
-        val body = LenientJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        val body = DataJson.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
         assertEquals(0.7, body["temperature"]!!.jsonPrimitive.content.toDouble(), 0.0)
         assertEquals(40, body["top_k"]!!.jsonPrimitive.int)
         assertEquals(listOf("A", "B"), body["stop"]!!.jsonArray.map { it.jsonPrimitive.content })

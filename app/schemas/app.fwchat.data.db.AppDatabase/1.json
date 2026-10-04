@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 1,
-    "identityHash": "c53a02b9c18ca5cb387e0dace698b018",
+    "identityHash": "6efecf4380d56f592f2c71b10308c0bb",
     "entities": [
       {
         "tableName": "chats",
@@ -198,15 +198,6 @@
             ],
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_chatId_createdAt` ON `${TABLE_NAME}` (`chatId`, `createdAt`)"
-          },
-          {
-            "name": "index_messages_parentId",
-            "unique": false,
-            "columnNames": [
-              "parentId"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_parentId` ON `${TABLE_NAME}` (`parentId`)"
           }
         ],
         "foreignKeys": [
@@ -273,7 +264,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c53a02b9c18ca5cb387e0dace698b018')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '6efecf4380d56f592f2c71b10308c0bb')"
     ]
   }
 }

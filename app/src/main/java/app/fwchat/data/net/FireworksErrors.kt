@@ -1,19 +1,12 @@
 package app.fwchat.data.net
 
+import app.fwchat.data.DataJson
 import app.fwchat.domain.FireworksException
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import java.net.SocketTimeoutException
-
-internal val LenientJson = Json {
-    ignoreUnknownKeys = true
-    isLenient = true
-    encodeDefaults = true
-    coerceInputValues = true
-}
 
 internal fun JsonObject.str(key: String): String? =
     (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
@@ -26,7 +19,7 @@ internal fun JsonObject.bool(key: String): Boolean? =
 internal fun JsonObject.obj(key: String): JsonObject? = this[key] as? JsonObject
 
 private fun parseErrorBody(body: String): Pair<String?, String?> {
-    val root = runCatching { LenientJson.parseToJsonElement(body) as? JsonObject }.getOrNull()
+    val root = runCatching { DataJson.parseToJsonElement(body) as? JsonObject }.getOrNull()
         ?: return null to null
     val err = root.obj("error")
     val message = err?.str("message") ?: (root["error"] as? JsonPrimitive)?.contentOrNull ?: root.str("message")
