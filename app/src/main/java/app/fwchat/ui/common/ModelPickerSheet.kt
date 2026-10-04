@@ -121,7 +121,7 @@ fun ModelPickerSheet(
                 if (missingSelected && query.isBlank()) {
                     item(key = "missing") {
                         ModelRow(
-                            title = selectedId!!.substringAfterLast('/'),
+                            title = selectedId.substringAfterLast('/'),
                             subtitle = "Indisponible dans la liste actuelle",
                             vision = false,
                             selected = true,
