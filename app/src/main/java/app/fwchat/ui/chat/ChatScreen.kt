@@ -100,6 +100,10 @@ fun ChatScreen(
     onOpenDrawer: () -> Unit,
     onChatCreated: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    /** Ouvre un nouveau chat vide (bouton « + » de la barre du haut, masqué sur un brouillon). */
+    onNewChat: () -> Unit = {},
+    /** Ouvre la bibliothèque de prompts système (raccourci depuis la feuille de choix du prompt). */
+    onOpenPrompts: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val factory = remember(container, chatId) {
