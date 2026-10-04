@@ -13,6 +13,7 @@ import app.fwchat.domain.SettingsRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.Json
 import java.io.IOException
@@ -41,8 +42,48 @@ class SettingsRepositoryImpl(
         secretStore.read()?.takeIf { it.isNotBlank() }
     } catch (e: CancellationException) {
         throw e
+    } catch (e: UnreadableSecretException) {
+        // Clé Keystore perdue: on efface le blob et le drapeau, l'app retombe sur l'onboarding.
+        dropUnreadableKey()
+        null
     } catch (e: Exception) {
         null
+    }
+
+    /**
+     * À appeler au démarrage: si le drapeau `hasApiKey` est vrai alors qu'aucune clé n'est lisible (blob illisible
+     * ou absent), le remet à faux pour que l'app retombe sur l'onboarding au lieu de boucler sur des erreurs 401.
+     * Une erreur transitoire (E/S, Keystore indisponible) ne change rien.
+     */
+    suspend fun reconcileApiKey() {
+        val flagged = try {
+            dataStore.data.first()[HAS_API_KEY] ?: false
+        } catch (e: IOException) {
+            return
+        }
+        if (!flagged) return
+        val readable = try {
+            !secretStore.read().isNullOrBlank()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: UnreadableSecretException) {
+            dropUnreadableKey()
+            return
+        } catch (e: Exception) {
+            return
+        }
+        if (!readable) dataStore.edit { it[HAS_API_KEY] = false }
+    }
+
+    private suspend fun dropUnreadableKey() {
+        try {
+            secretStore.write(null)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Suppression impossible: le drapeau est quand même remis à faux.
+        }
+        dataStore.edit { it[HAS_API_KEY] = false }
     }
 
     override suspend fun setApiKey(key: String?) {

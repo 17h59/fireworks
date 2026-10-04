@@ -8,7 +8,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.GeneralSecurityException
 import java.security.KeyStore
+import java.security.KeyStoreException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -16,11 +18,18 @@ import javax.crypto.spec.GCMParameterSpec
 
 /** Stockage d'un secret unique (la clé API). Implémentations: Keystore (prod), mémoire (tests). */
 interface SecretStore {
-    /** null = rien de stocké, ou secret illisible (clé Keystore perdue). */
+    /**
+     * null = rien de stocké.
+     * @throws UnreadableSecretException un secret est stocké mais définitivement illisible (clé Keystore perdue
+     * ou invalidée, blob corrompu ou restauré d'un autre appareil). Les erreurs transitoires (E/S) sont propagées telles quelles.
+     */
     suspend fun read(): String?
     /** null = effacer. */
     suspend fun write(secret: String?)
 }
+
+/** Un secret est présent mais ne pourra plus jamais être déchiffré: il doit être effacé. */
+class UnreadableSecretException(cause: Throwable? = null) : Exception("Secret illisible", cause)
 
 /**
  * Chiffre le secret en AES-256/GCM avec une clé Android Keystore non exportable (alias dédié).
@@ -36,19 +45,28 @@ class KeystoreSecretStore(
 
     override suspend fun read(): String? = lock.withLock {
         withContext(Dispatchers.IO) {
+            if (!file.isFile) return@withContext null
+            val text = file.readText().trim()
             try {
-                if (!file.isFile) return@withContext null
-                val blob = Base64.decode(file.readText().trim(), Base64.NO_WRAP)
-                if (blob.size <= IV_SIZE) return@withContext null
+                val blob = Base64.decode(text, Base64.NO_WRAP)
+                if (blob.size <= IV_SIZE) throw UnreadableSecretException()
                 val cipher = Cipher.getInstance(TRANSFORMATION)
                 cipher.init(
-                    Cipher.DECRYPT_MODE, existingKey() ?: return@withContext null,
+                    Cipher.DECRYPT_MODE, existingKey() ?: throw UnreadableSecretException(),
                     GCMParameterSpec(TAG_BITS, blob, 0, IV_SIZE),
                 )
                 String(cipher.doFinal(blob, IV_SIZE, blob.size - IV_SIZE), Charsets.UTF_8)
-            } catch (e: Exception) {
-                // Clé Keystore perdue/invalidée, blob corrompu ou restauré d'un autre appareil: considéré absent.
-                null
+            } catch (e: UnreadableSecretException) {
+                throw e
+            } catch (e: KeyStoreException) {
+                // Keystore momentanément indisponible: transitoire, on ne détruit rien.
+                throw e
+            } catch (e: GeneralSecurityException) {
+                // AEADBadTag, clé invalidée/irrécupérable, blob restauré d'un autre appareil: définitif.
+                throw UnreadableSecretException(e)
+            } catch (e: IllegalArgumentException) {
+                // Base64 invalide: blob corrompu.
+                throw UnreadableSecretException(e)
             }
         }
     }

@@ -82,4 +82,64 @@ class SettingsRepositoryImplTest {
         assertNull(s2.defaultModelId)
         assertNull(s2.defaultSystemPromptId)
     }
+
+    @Test
+    fun unreadableKeyResetsFlagAndClearsBlobOnApiKey() = runBlocking {
+        repo.setApiKey("fw_secret")
+        assertTrue(repo.settings.first().hasApiKey)
+
+        secrets.unreadable = true
+        assertNull(repo.apiKey())
+
+        assertFalse(repo.settings.first().hasApiKey)
+        assertNull(secrets.value)
+        assertFalse(secrets.unreadable)
+        assertNull(repo.apiKey())
+    }
+
+    @Test
+    fun reconcileAtStartupResetsFlagWhenKeyIsUnreadable() = runBlocking {
+        repo.setApiKey("fw_secret")
+        secrets.unreadable = true
+
+        repo.reconcileApiKey()
+
+        assertFalse(repo.settings.first().hasApiKey)
+        assertNull(secrets.value)
+        assertFalse(secrets.unreadable)
+    }
+
+    @Test
+    fun reconcileAtStartupResetsFlagWhenBlobIsMissing() = runBlocking {
+        repo.setApiKey("fw_secret")
+        secrets.value = null
+
+        repo.reconcileApiKey()
+
+        assertFalse(repo.settings.first().hasApiKey)
+    }
+
+    @Test
+    fun reconcileKeepsFlagWhenKeyIsReadable() = runBlocking {
+        repo.setApiKey("fw_secret")
+        repo.reconcileApiKey()
+        assertTrue(repo.settings.first().hasApiKey)
+        assertEquals("fw_secret", repo.apiKey())
+    }
+
+    @Test
+    fun reconcileLeavesStateAloneOnTransientError() = runBlocking {
+        repo.setApiKey("fw_secret")
+        val flaky = object : SecretStore {
+            override suspend fun read(): String? = throw java.io.IOException("disque occupé")
+            override suspend fun write(secret: String?) = Unit
+        }
+        val store = PreferenceDataStoreFactory.create(scope = scope) { tmp.newFile("s2.preferences_pb").also { it.delete() } }
+        val repo2 = SettingsRepositoryImpl(store, flaky)
+        repo2.setApiKey("x")
+        repo2.reconcileApiKey()
+        assertTrue(repo2.settings.first().hasApiKey)
+        assertNull(repo2.apiKey())
+        assertTrue(repo2.settings.first().hasApiKey)
+    }
 }

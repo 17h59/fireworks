@@ -9,9 +9,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ProducerScope
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -38,17 +40,26 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlin.random.Random
 
 /**
  * Client Fireworks (OkHttp). Aucune dépendance Android.
  *
  * @param baseUrl racine sans slash final (injectable pour MockWebServer).
  * @param streamIdleTimeoutSeconds délai max sans aucun octet reçu pendant le streaming (readTimeout du client SSE).
+ * @param maxAttempts nombre maximal d'essais d'une requête de chat (1 = pas de relance). Une relance n'a lieu que sur
+ * 429 ou 5xx survenus AVANT le premier événement du flux; jamais après un delta reçu.
+ * @param retryBaseDelayMs délai de base du backoff exponentiel (avec jitter); `Retry-After` est respecté s'il est présent.
+ * @param maxRetryAfterMs au-delà de cette attente demandée par le serveur, on ne relance pas et l'erreur est remontée.
  */
 class FireworksApiImpl(
     client: OkHttpClient,
     baseUrl: String = DEFAULT_BASE_URL,
     streamIdleTimeoutSeconds: Long = 120,
+    private val maxAttempts: Int = 3,
+    private val retryBaseDelayMs: Long = 1000,
+    private val maxRetryAfterMs: Long = 20_000,
+    private val random: Random = Random.Default,
 ) : FireworksApi {
 
     private val base = baseUrl.trimEnd('/')
@@ -155,7 +166,39 @@ class FireworksApiImpl(
 
     // ---------------------------------------------------------------- streamChat
 
-    override fun streamChat(apiKey: String, request: ChatRequest): Flow<StreamEvent> = callbackFlow {
+    override fun streamChat(apiKey: String, request: ChatRequest): Flow<StreamEvent> = flow {
+        var attempt = 1
+        while (true) {
+            var started = false
+            try {
+                streamOnce(apiKey, request).collect {
+                    started = true
+                    emit(it)
+                }
+                return@flow
+            } catch (e: FireworksException) {
+                if (started || attempt >= maxAttempts) throw e
+                val wait = retryDelayMs(e, attempt) ?: throw e
+                attempt++
+                delay(wait)
+            }
+        }
+    }
+
+    /** Délai avant la prochaine tentative, ou null si l'erreur n'est pas relançable (seuls 429 et 5xx le sont). */
+    private fun retryDelayMs(e: FireworksException, attempt: Int): Long? {
+        val retryAfterMs = when {
+            e is FireworksException.RateLimited -> e.retryAfterSeconds?.let { it.coerceAtLeast(0) * 1000L }
+            e is FireworksException.Http && e.code in 500..599 -> null
+            else -> return null
+        }
+        if (retryAfterMs != null) return retryAfterMs.takeIf { it <= maxRetryAfterMs }
+        // Backoff exponentiel avec jitter: entre la moitié et la totalité de base * 2^(essai-1).
+        val ceiling = retryBaseDelayMs shl (attempt - 1).coerceAtMost(10)
+        return ceiling / 2 + random.nextLong(ceiling / 2 + 1)
+    }
+
+    private fun streamOnce(apiKey: String, request: ChatRequest): Flow<StreamEvent> = callbackFlow {
         val httpRequest = Request.Builder()
             .url("$base/inference/v1/chat/completions")
             .header("Authorization", "Bearer $apiKey")

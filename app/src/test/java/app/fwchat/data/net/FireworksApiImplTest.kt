@@ -41,7 +41,7 @@ class FireworksApiImplTest {
     fun setUp() {
         server = MockWebServer().apply { start() }
         client = OkHttpClient.Builder().retryOnConnectionFailure(false).build()
-        api = FireworksApiImpl(client, server.url("/").toString().trimEnd('/'))
+        api = FireworksApiImpl(client, server.url("/").toString().trimEnd('/'), maxAttempts = 1)
     }
 
     @After
@@ -314,5 +314,138 @@ class FireworksApiImplTest {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (client.dispatcher.runningCallsCount() > 0 && System.nanoTime() < deadline) Thread.sleep(20)
         assertEquals(0, client.dispatcher.runningCallsCount())
+    }
+
+    // ------------------------------------------------------------ relances (429 / 5xx avant le flux)
+
+    private fun retrying(maxAttempts: Int = 3) = FireworksApiImpl(
+        client, server.url("/").toString().trimEnd('/'),
+        maxAttempts = maxAttempts, retryBaseDelayMs = 1,
+    )
+
+    private val okStream get() = sse(chunk("""{"content":"ok"}"""), chunk("{}", "stop"))
+
+    @Test
+    fun retriesOn503ThenSucceeds() = runBlocking {
+        server.enqueue(json("""{"error":{"message":"overloaded"}}""", 503))
+        server.enqueue(json("""{"error":{"message":"overloaded"}}""", 500))
+        server.enqueue(okStream)
+        val events = retrying().streamChat("KEY", request).toList()
+        assertEquals(StreamEvent.ContentDelta("ok"), events.first())
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun retriesOn429ThenSucceedsRespectingRetryAfter() = runBlocking {
+        server.enqueue(json("""{"error":{"message":"slow down","code":"RESOURCE_EXHAUSTED"}}""", 429).setHeader("Retry-After", "1"))
+        server.enqueue(okStream)
+        val t0 = System.nanoTime()
+        val events = retrying().streamChat("KEY", request).toList()
+        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0)
+        assertEquals(StreamEvent.ContentDelta("ok"), events.first())
+        assertEquals(2, server.requestCount)
+        assertTrue("Retry-After ignoré (${elapsedMs} ms)", elapsedMs >= 950)
+    }
+
+    @Test
+    fun givesUpAfterMaxAttemptsWithLastError() = runBlocking {
+        repeat(3) { server.enqueue(json("""{"error":{"message":"down"}}""", 502)) }
+        server.enqueue(okStream)
+        try {
+            retrying().streamChat("KEY", request).toList(); fail()
+        } catch (e: FireworksException.Http) {
+            assertEquals(502, e.code)
+        }
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun doesNotRetryOtherErrors() = runBlocking {
+        server.enqueue(json("""{"error":{"message":"bad key","code":"UNAUTHORIZED"}}""", 401))
+        server.enqueue(okStream)
+        try {
+            retrying().streamChat("KEY", request).toList(); fail()
+        } catch (e: FireworksException.Unauthorized) {
+            // attendu
+        }
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun doesNotRetryWhenRetryAfterIsTooLong() = runBlocking {
+        server.enqueue(json("""{"error":{"message":"slow down"}}""", 429).setHeader("Retry-After", "3600"))
+        server.enqueue(okStream)
+        try {
+            retrying().streamChat("KEY", request).toList(); fail()
+        } catch (e: FireworksException.RateLimited) {
+            assertEquals(3600, e.retryAfterSeconds)
+        }
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun neverRetriesAfterADeltaWasReceived() = runBlocking {
+        server.enqueue(sse(chunk("""{"content":"a"}"""), """{"error":{"message":"quota","code":"RESOURCE_EXHAUSTED"}}"""))
+        server.enqueue(okStream)
+        val received = mutableListOf<StreamEvent>()
+        try {
+            retrying().streamChat("KEY", request).collect { received += it }
+            fail()
+        } catch (e: FireworksException.RateLimited) {
+            assertEquals(listOf<StreamEvent>(StreamEvent.ContentDelta("a")), received)
+        }
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun retriesEmbeddedErrorBeforeFirstEvent() = runBlocking {
+        server.enqueue(sse("""{"error":{"message":"quota","code":"RESOURCE_EXHAUSTED"}}"""))
+        server.enqueue(okStream)
+        val events = retrying().streamChat("KEY", request).toList()
+        assertEquals(StreamEvent.ContentDelta("ok"), events.first())
+        assertEquals(2, server.requestCount)
+    }
+
+    // ------------------------------------------------------------ SSE: régressions de format
+
+    @Test
+    fun multiByteUtf8ReceivedByteByByteIsDecoded() = runBlocking {
+        val text = "é€😀日本語"
+        val body = "data: " + chunk("""{"content":"$text"}""") + "\n\n" + "data: " + chunk("{}", "stop") + "\n\n"
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)
+                .throttleBody(1, 1, TimeUnit.MILLISECONDS),
+        )
+        val events = collect()
+        assertEquals(StreamEvent.ContentDelta(text), events.first())
+        assertEquals(StreamEvent.Finish("stop"), events.last())
+    }
+
+    @Test
+    fun crlfCommentsAndEventFieldsAreIgnored() = runBlocking {
+        val body = ": keep-alive\r\n\r\n" +
+            "event: message\r\ndata: " + chunk("""{"content":"a"}""") + "\r\n\r\n" +
+            ": ping\r\n" +
+            "event: message\r\nid: 7\r\ndata: " + chunk("""{"content":"b"}""") + "\r\n\r\n" +
+            "data: " + chunk("{}", "stop") + "\r\n\r\n" +
+            "data: [DONE]\r\n\r\n"
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body))
+        val events = collect()
+        assertEquals(
+            listOf<StreamEvent>(StreamEvent.ContentDelta("a"), StreamEvent.ContentDelta("b"), StreamEvent.Finish("stop")),
+            events,
+        )
+    }
+
+    @Test
+    fun dataSplitOverSeveralLinesIsJoined() = runBlocking {
+        val body = "data: {\"choices\":[{\"index\":0,\n" +
+            "data: \"delta\":{\"content\":\"multi\"},\n" +
+            "data: \"finish_reason\":null}]}\n\n" +
+            "data: " + chunk("{}", "stop") + "\n\n"
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body))
+        val events = collect()
+        assertEquals(StreamEvent.ContentDelta("multi"), events.first())
+        assertEquals(StreamEvent.Finish("stop"), events.last())
     }
 }

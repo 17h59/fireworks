@@ -62,10 +62,11 @@ class AppContainer(context: Context) {
 
     val chats: ChatRepository = ChatRepositoryImpl(database)
     val prompts: SystemPromptRepository = SystemPromptRepositoryImpl(database)
-    val settings: SettingsRepository = SettingsRepositoryImpl(
+    private val settingsImpl = SettingsRepositoryImpl(
         dataStore = dataStore,
         secretStore = KeystoreSecretStore(File(filesDir, "secrets/api_key.bin")),
     )
+    val settings: SettingsRepository = settingsImpl
     val models: ModelRepository = ModelRepositoryImpl(
         api = api,
         settings = settings,
@@ -97,6 +98,14 @@ class AppContainer(context: Context) {
                 // Non bloquant.
             } finally {
                 recovered.complete(Unit)
+            }
+            try {
+                // Clé Keystore perdue: remet hasApiKey à faux (retour à l'onboarding) avant d'utiliser la clé.
+                settingsImpl.reconcileApiKey()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Non bloquant.
             }
             try {
                 if (!settings.apiKey().isNullOrBlank() && models.refresh().isSuccess) {

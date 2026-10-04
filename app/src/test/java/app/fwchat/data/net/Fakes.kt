@@ -1,6 +1,7 @@
 package app.fwchat.data.net
 
 import app.fwchat.data.prefs.SecretStore
+import app.fwchat.data.prefs.UnreadableSecretException
 import app.fwchat.domain.AppDefaults
 import app.fwchat.domain.AppSettings
 import app.fwchat.domain.Chat
@@ -24,8 +25,14 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 
 class InMemorySecretStore(var value: String? = null) : SecretStore {
-    override suspend fun read(): String? = value
-    override suspend fun write(secret: String?) { value = secret }
+    /** Simule un blob présent mais illisible (clé Keystore perdue). */
+    var unreadable = false
+    var writes = 0
+    override suspend fun read(): String? {
+        if (unreadable) throw UnreadableSecretException()
+        return value
+    }
+    override suspend fun write(secret: String?) { writes++; value = secret; unreadable = false }
 }
 
 class FakeSettings(var key: String? = "fw_test_key") : SettingsRepository {
