@@ -47,6 +47,16 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
+private fun MessageCallbacks.stopFollowingOnThinkingChange(following: MutableState<Boolean>) = MessageCallbacks(
+    onCopy = onCopy, onStartEdit = onStartEdit, onCancelEdit = onCancelEdit, onSaveEdit = onSaveEdit,
+    onSendEdit = onSendEdit, onRegenerate = onRegenerate, onRetry = onRetry, onFork = onFork, onDelete = onDelete,
+    onSibling = onSibling,
+    onThinkingToggle = { id, m -> following.value = false; onThinkingToggle(id, m) },
+    onThinkingShowAll = { id, m -> following.value = false; onThinkingShowAll(id, m) },
+    onThinkingShrink = { id, m -> following.value = false; onThinkingShrink(id, m) },
+    onOpenSettings = onOpenSettings, onOpenModels = onOpenModels, onOpenParams = onOpenParams,
+)
+
 /** Actions déclenchées depuis les messages (créées une seule fois par écran: instance stable). */
 @Stable
 class MessageCallbacks(
@@ -163,6 +173,10 @@ internal fun MessageList(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(),
 ) {
+    // Déplier / replier la réflexion est un geste de lecture: le bloc doit grandir VERS LE BAS à sa place. Si le suivi
+    // du bas restait actif, il recollerait la vue au bas de la liste et le bloc semblerait s'étirer vers le haut.
+    @Suppress("NAME_SHADOWING")
+    val callbacks = remember(callbacks, following) { callbacks.stopFollowingOnThinkingChange(following) }
     val style = rememberMarkdownStyle()
     val thinkStyle = rememberThinkingStyle(style)
     val cache = rememberMarkdownBlocksCache()
