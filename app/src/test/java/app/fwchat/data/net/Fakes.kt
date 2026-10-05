@@ -36,12 +36,13 @@ class InMemorySecretStore(var value: String? = null) : SecretStore {
 }
 
 class FakeSettings(var key: String? = "fw_test_key") : SettingsRepository {
-    override val settings: Flow<AppSettings> = flowOf(AppSettings(key != null, null, null, AppDefaults.GEN_PARAMS))
+    private val state = MutableStateFlow(AppSettings(key != null, null, null, AppDefaults.GEN_PARAMS))
+    override val settings: Flow<AppSettings> = state
     override suspend fun apiKey(): String? = key
     override suspend fun setApiKey(key: String?) { this.key = key }
     override suspend fun setDefaultModel(modelId: String?) = Unit
     override suspend fun setDefaultSystemPrompt(promptId: String?) = Unit
-    override suspend fun setDefaultParams(params: GenParams) = Unit
+    override suspend fun setDefaultParams(params: GenParams) { state.value = state.value.copy(defaultParams = params) }
 }
 
 class FakeModelRepository : ModelRepository {

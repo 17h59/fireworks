@@ -84,6 +84,23 @@ class SettingsRepositoryImplTest {
     }
 
     @Test
+    fun globalParamsSurviveANewRepositoryOnTheSameFile() = runBlocking {
+        val file = tmp.newFile("persist.preferences_pb").also { it.delete() }
+        val params = GenParams(
+            temperature = 0.7, topP = 0.9, maxTokens = 4096, stop = listOf("A", "B"),
+            frequencyPenalty = 0.1, presencePenalty = 0.2, reasoningEffort = ReasoningEffort.NONE,
+        )
+        val scope1 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val first = SettingsRepositoryImpl(PreferenceDataStoreFactory.create(scope = scope1) { file }, InMemorySecretStore())
+        first.setDefaultParams(params)
+        scope1.cancel()
+        val scope2 = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val second = SettingsRepositoryImpl(PreferenceDataStoreFactory.create(scope = scope2) { file }, InMemorySecretStore())
+        assertEquals(params, second.settings.first().defaultParams)
+        scope2.cancel()
+    }
+
+    @Test
     fun unreadableKeyResetsFlagAndClearsBlobOnApiKey() = runBlocking {
         repo.setApiKey("fw_secret")
         assertTrue(repo.settings.first().hasApiKey)

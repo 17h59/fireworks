@@ -1,6 +1,7 @@
 package app.fwchat.ui.chat
 
 import app.cash.turbine.test
+import app.fwchat.domain.AppDefaults
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.ReasoningEffort
 import app.fwchat.domain.Role
@@ -356,7 +357,8 @@ class ChatViewModelTest {
     @Test
     fun parametresDeChatSontAppliquesAvecDebounce() = runTest(dispatcher) {
         val id = existingChat()
-        val vm = vm(id, FakeSettingsRepo(), models("glm-5p3"))
+        val settings = FakeSettingsRepo()
+        val vm = vm(id, settings, models("glm-5p3"))
         advanceUntilIdle()
 
         val p1 = GenParams(maxTokens = 100, temperature = 0.1)
@@ -374,39 +376,73 @@ class ChatViewModelTest {
         assertEquals(p3, vm.state.value.params)
         advanceTimeBy(399)
         runCurrent()
-        assertTrue(repo.settingsCalls.isEmpty())
+        assertEquals(AppDefaults.GEN_PARAMS, settings.current.defaultParams)
         advanceTimeBy(2)
         runCurrent()
-        assertEquals(listOf(MemChatRepo.SettingsCall(id, null, p3)), repo.settingsCalls)
+        assertEquals(p3, settings.current.defaultParams)
+        assertTrue(repo.settingsCalls.isEmpty()) // plus d'ecriture par chat
         advanceUntilIdle()
         assertEquals(p3, vm.state.value.params)
     }
 
     @Test
+    fun modifierDepuisUnChatMetAJourLeGlobalVuParUnAutreChatEtUnBrouillon() = runTest(dispatcher) {
+        val id = existingChat()
+        val settings = FakeSettingsRepo()
+        val vm = vm(id, settings, models("glm-5p3"))
+        val other = vm(null, settings, models("glm-5p3"))
+        advanceUntilIdle()
+        val p = GenParams(maxTokens = 99, temperature = 0.4, stop = listOf("FIN"))
+        vm.setParams(p)
+        vm.flushParams()
+        advanceUntilIdle()
+        assertEquals(p, settings.current.defaultParams)
+        assertEquals(p, other.state.value.params)
+        assertEquals(p, vm.state.value.params)
+    }
+
+    @Test
+    fun changerDeModeleNeModifiePasLesParametres() = runTest(dispatcher) {
+        val id = existingChat()
+        val settings = FakeSettingsRepo()
+        val vm = vm(id, settings, models("glm-5p3", "kimi-k3"))
+        advanceUntilIdle()
+        val p = GenParams(maxTokens = 123, reasoningEffort = ReasoningEffort.NONE)
+        vm.setParams(p)
+        vm.flushParams()
+        advanceUntilIdle()
+        vm.setModel("accounts/fireworks/models/kimi-k3")
+        advanceUntilIdle()
+        assertEquals(p, settings.current.defaultParams)
+        assertEquals(p, vm.state.value.params)
+    }
+
+    @Test
     fun flushParamsEnregistreImmediatement() = runTest(dispatcher) {
         val id = existingChat()
-        val vm = vm(id, FakeSettingsRepo(), models("glm-5p3"))
+        val settings = FakeSettingsRepo()
+        val vm = vm(id, settings, models("glm-5p3"))
         advanceUntilIdle()
         val p = GenParams(maxTokens = 100, topP = 0.5)
         vm.setParams(p)
         runCurrent()
         vm.flushParams()
         runCurrent()
-        assertEquals(listOf(MemChatRepo.SettingsCall(id, null, p)), repo.settingsCalls)
-        advanceUntilIdle()
-        assertEquals(1, repo.settingsCalls.size) // pas de second enregistrement apres le delai
+        assertEquals(p, settings.current.defaultParams)
+        assertTrue(repo.settingsCalls.isEmpty())
     }
 
     @Test
-    fun parametresDuBrouillonRestentEnMemoire() = runTest(dispatcher) {
-        val vm = vm(null, FakeSettingsRepo(), models("glm-5p3"))
+    fun parametresDuBrouillonSontGlobaux() = runTest(dispatcher) {
+        val settings = FakeSettingsRepo()
+        val vm = vm(null, settings, models("glm-5p3"))
         advanceUntilIdle()
         val p = GenParams(temperature = 1.5)
         vm.setParams(p)
         advanceTimeBy(1000)
         advanceUntilIdle()
         assertEquals(p, vm.state.value.params)
-        assertTrue(repo.settingsCalls.isEmpty())
+        assertEquals(p, settings.current.defaultParams)
         assertTrue(repo.chats.isEmpty())
     }
 

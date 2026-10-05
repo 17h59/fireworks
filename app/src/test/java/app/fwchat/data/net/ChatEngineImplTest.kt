@@ -231,10 +231,44 @@ class ChatEngineImplTest {
     }
 
     @Test
+    fun requestUsesGlobalParamsReadAtSendTimeForAllChats() = runTest {
+        val e = env()
+        val c1 = e.chats.addChat(modelId = "accounts/fireworks/models/kimi-k3", systemPrompt = null, params = GenParams())
+        val c2 = e.chats.addChat(modelId = "accounts/fireworks/models/qwen3p8-max", systemPrompt = null, params = GenParams())
+        e.api.handler = { script(StreamEvent.ContentDelta("ok"), StreamEvent.Finish("stop")) }
+        val first = GenParams(temperature = 0.2, maxTokens = 50)
+        e.settings.setDefaultParams(first)
+        e.engine.send(c1, "a")
+        advanceUntilIdle()
+        val second = GenParams(temperature = 0.9, topP = 0.5, maxTokens = 77)
+        e.settings.setDefaultParams(second)
+        e.engine.send(c2, "b")
+        e.engine.send(c1, "c")
+        advanceUntilIdle()
+        assertEquals(listOf(first, second, second), e.api.requests.map { it.params })
+    }
+
+    @Test
+    fun noneReasoningIsOmittedForGlmAndGptOssOnly() = runTest {
+        val e = env()
+        e.settings.setDefaultParams(GenParams(maxTokens = 10, reasoningEffort = ReasoningEffort.NONE))
+        e.api.handler = { script(StreamEvent.ContentDelta("ok"), StreamEvent.Finish("stop")) }
+        for (m in listOf("glm-5p3", "gpt-oss-120b", "kimi-k3")) {
+            val id = e.chats.addChat(modelId = "accounts/fireworks/models/$m", systemPrompt = null, params = GenParams())
+            e.engine.send(id, "x")
+            advanceUntilIdle()
+        }
+        assertEquals(listOf(null, null, ReasoningEffort.NONE), e.api.requests.map { it.params.reasoningEffort })
+        assertEquals(10, e.api.requests[0].params.maxTokens)
+    }
+
+    @Test
     fun requestWithSystemPromptAndParams() = runTest {
         val e = env()
         val params = GenParams(temperature = 0.5, maxTokens = 321, stop = listOf("END"), reasoningEffort = ReasoningEffort.LOW)
-        val chatId = e.chats.addChat(modelId = "accounts/fireworks/models/glm", systemPrompt = "Tu es utile.", params = params)
+        e.settings.setDefaultParams(params)
+        // chat.params (trace a la creation) n'est plus lu pour la requete
+        val chatId = e.chats.addChat(modelId = "accounts/fireworks/models/glm", systemPrompt = "Tu es utile.", params = GenParams(temperature = 1.9))
         // Historique: user, assistant avec contenu, user.
         val u1 = e.chats.add(chatId, null, Role.USER, "Q1")
         val a1 = e.chats.add(chatId, u1.id, Role.ASSISTANT, "R1")
