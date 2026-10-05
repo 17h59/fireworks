@@ -51,6 +51,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Shape
@@ -497,7 +498,7 @@ internal fun LiveThinking(
     val content = live?.content ?: m.content
     val thinking = ThinkingStates.isThinking(MessageStatus.STREAMING, content)
     val mode = ThinkingStates.resolve(override, messageStreaming = true, hasContent = content.isNotEmpty())
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp).testTag("thinking-block")) {
         ThinkingHeader(mode, thinking, tokens = null) { cb.onThinkingToggle(m.id, mode) }
         when (mode) {
             ThinkingMode.COLLAPSED -> Unit
@@ -527,7 +528,7 @@ internal fun LazyListScope.thinkingItems(
     loader: MarkdownBlocksLoader,
 ) {
     item(key = "m:${m.id}:think", contentType = "think") {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp).testTag("thinking-block")) {
             ThinkingHeader(mode, thinking = false, tokens = m.reasoningTokens) { cb.onThinkingToggle(m.id, mode) }
             if (mode == ThinkingMode.PREVIEW) {
                 ThinkingText(m.id, reasoning, thinkStyle, streaming = false, preview = true, fromEnd = false)
@@ -557,6 +558,7 @@ private fun ThinkingHeader(mode: ThinkingMode, thinking: Boolean, tokens: Int?, 
     val chevronRotation by animateFloatAsState(if (open) 180f else 0f, label = "thinking-chevron")
     Row(
         Modifier
+            .testTag("thinking-header")
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClickLabel = description, onClick = onToggle)
             .heightIn(min = 48.dp)
@@ -615,18 +617,18 @@ private fun ThinkingText(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         selectable = !streaming,
         resetKey = "r:$messageId",
-        modifier = Modifier.padding(start = 12.dp, end = 4.dp, bottom = 4.dp),
+        modifier = Modifier.padding(start = 12.dp, end = 4.dp, bottom = 4.dp).testTag("thinking-text"),
     )
 }
 
 @Composable
 private fun ShowAllButton(reasoning: String, onClick: () -> Unit) {
     if (ThinkingStates.mayOverflowPreview(reasoning)) {
-        TextButton(onClick = onClick, modifier = Modifier.padding(start = 4.dp)) { Text("Tout afficher") }
+        TextButton(onClick = onClick, modifier = Modifier.padding(start = 4.dp).testTag("thinking-show-all")) { Text("Tout afficher") }
     }
 }
 
 @Composable
 private fun ShrinkButton(onClick: () -> Unit) {
-    TextButton(onClick = onClick, modifier = Modifier.padding(start = 4.dp)) { Text("Réduire") }
+    TextButton(onClick = onClick, modifier = Modifier.padding(start = 4.dp).testTag("thinking-shrink")) { Text("Réduire") }
 }
