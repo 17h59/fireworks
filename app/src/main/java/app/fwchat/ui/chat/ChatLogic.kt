@@ -17,7 +17,8 @@ enum class ThinkingMode { COLLAPSED, PREVIEW, FULL }
 
 /**
  * États du bloc de réflexion.
- * - Défaut: aperçu pendant que le message streame, replié sinon (messages terminés / historiques).
+ * - Défaut: aperçu (5 lignes) tant que le message streame ET que la réponse n'a pas commencé (contenu vide);
+ *   replié dès le premier token de contenu, et pour les messages terminés / historiques.
  * - Le hamburger replie complètement quand le bloc est ouvert (aperçu ou complet), et rouvre en aperçu quand il est replié.
  * - « Tout afficher » passe de l'aperçu au complet; « Réduire » repasse du complet à l'aperçu.
  * Un choix explicite de l'utilisateur (override) l'emporte sur le défaut, y compris quand le message se termine.
@@ -25,11 +26,11 @@ enum class ThinkingMode { COLLAPSED, PREVIEW, FULL }
 object ThinkingStates {
     private const val PREVIEW_LINES = 5
 
-    fun default(messageStreaming: Boolean): ThinkingMode =
-        if (messageStreaming) ThinkingMode.PREVIEW else ThinkingMode.COLLAPSED
+    fun default(messageStreaming: Boolean, hasContent: Boolean): ThinkingMode =
+        if (messageStreaming && !hasContent) ThinkingMode.PREVIEW else ThinkingMode.COLLAPSED
 
-    fun resolve(override: ThinkingMode?, messageStreaming: Boolean): ThinkingMode =
-        override ?: default(messageStreaming)
+    fun resolve(override: ThinkingMode?, messageStreaming: Boolean, hasContent: Boolean): ThinkingMode =
+        override ?: default(messageStreaming, hasContent)
 
     fun onHamburger(current: ThinkingMode): ThinkingMode =
         if (current == ThinkingMode.COLLAPSED) ThinkingMode.PREVIEW else ThinkingMode.COLLAPSED
@@ -92,7 +93,7 @@ object ConversationFormatter {
         for (m in messages) {
             append('\n')
             when (m.role) {
-                Role.USER -> append("Vous :\n")
+                Role.USER -> append("Toi :\n")
                 Role.ASSISTANT -> {
                     append("Assistant")
                     m.modelId?.let { append(" (").append(it.substringAfterLast('/')).append(')') }
@@ -104,7 +105,7 @@ object ConversationFormatter {
             when (m.status) {
                 MessageStatus.ERROR -> append("\n[Erreur : ").append(m.error ?: "inconnue").append(']')
                 MessageStatus.INTERRUPTED -> append("\n[Interrompu]")
-                else -> Unit
+                else -> if (m.isTruncated()) append("\n[Réponse tronquée : limite de tokens atteinte]")
             }
             append('\n')
         }
@@ -115,7 +116,40 @@ object ConversationFormatter {
         val parts = ArrayList<String>(3)
         message.modelId?.let { parts += it.substringAfterLast('/') }
         message.completionTokens?.let { parts += "${formatInt(it)} tokens" }
+        if (message.isTruncated()) parts += "tronquée"
         if (message.edited) parts += "modifié"
         return if (parts.isEmpty()) null else parts.joinToString(" · ")
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Réponse tronquée et erreurs actionnables
+
+/** Réponse terminée (COMPLETE) mais coupée par la limite de tokens: le contenu est partiel. */
+fun Message.isTruncated(): Boolean =
+    role == Role.ASSISTANT && status == MessageStatus.COMPLETE && finishReason == "length" && content.isNotEmpty()
+
+/** Ce que l'utilisateur peut faire face à une erreur de génération. */
+enum class ErrorKind { INVALID_KEY, MODEL_NOT_FOUND, CUT_DURING_REASONING, OTHER }
+
+object ErrorKinds {
+    /**
+     * Type d'erreur déduit du texte stocké dans `Message.error` (voir `FireworksException.toUserMessage()` et
+     * `ChatEngineImpl`): le contrat de domaine ne porte pas de code d'erreur.
+     */
+    fun classify(error: String?): ErrorKind {
+        val t = error?.lowercase() ?: return ErrorKind.OTHER
+        return when {
+            "clé api" in t && ("invalide" in t || "manquante" in t) -> ErrorKind.INVALID_KEY
+            "modèle introuvable" in t -> ErrorKind.MODEL_NOT_FOUND
+            "coupé pendant la réflexion" in t -> ErrorKind.CUT_DURING_REASONING
+            else -> ErrorKind.OTHER
+        }
+    }
+
+    /**
+     * Une erreur du moteur est-elle déjà visible dans le fil (bloc d'erreur d'un message)? Alors pas de snackbar en double.
+     */
+    fun isShownInline(text: String, path: List<Message>): Boolean =
+        path.any { it.status == MessageStatus.ERROR && it.error == text }
 }

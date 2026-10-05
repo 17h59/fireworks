@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
@@ -69,6 +70,10 @@ data class ChatUiState(
     val editingMessageId: String? = null,
     val thinkingOverrides: Map<String, ThinkingMode> = emptyMap(),
     val canSend: Boolean = false,
+    /** Paramètres par défaut globaux (Réglages): sert à signaler un chat aux paramètres personnalisés. */
+    val defaultParams: GenParams = AppDefaults.GEN_PARAMS,
+    /** Prompt système par défaut (Réglages), null = aucun. */
+    val defaultPromptId: String? = null,
 )
 
 sealed interface ChatUiEvent {
@@ -160,7 +165,22 @@ class ChatViewModel(
     val streaming: StateFlow<Map<String, StreamingText>> get() = engine.streaming
 
     /** Événements du moteur (clé API invalide, erreurs): l'écran visible les affiche en snackbar. */
-    val engineNotices: Flow<EngineNotice> get() = engine.events.mapNotNull { it.noticeFor(chatId) }
+    val engineNotices: Flow<EngineNotice> get() = engine.events.mapNotNull { event ->
+        val notice = event.noticeFor(chatId)
+        // Une erreur de génération déjà visible dans le bloc d'erreur du fil n'est pas répétée en snackbar.
+        if (notice is EngineNotice.Message && isShownInline(notice.text)) null else notice
+    }
+
+    private suspend fun isShownInline(text: String): Boolean {
+        val id = chatId ?: return false
+        return try {
+            ErrorKinds.isShownInline(text, chats.getActivePath(id))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     /**
      * Copie du brouillon de saisie: survit aux changements de configuration quand le texte est trop gros pour
@@ -178,7 +198,13 @@ class ChatViewModel(
         val extras = combine(modelsFlow, promptsFlow, localParams, thinking, editing) { m, p, lp, th, ed ->
             Extras(m, p, lp, th, ed)
         }
-        combine(core, extras, threadFailed) { c, e, failed -> buildState(c, e, failed) }
+        // Valeurs par défaut globales (réglages): une panne de lecture ne doit jamais casser l'écran.
+        val defaults = settings.settings
+            .map { Defaults(it.defaultParams, it.defaultSystemPromptId) }
+            .distinctUntilChanged()
+            .catch { emit(Defaults(AppDefaults.GEN_PARAMS, null)) }
+            .onStart { emit(Defaults(AppDefaults.GEN_PARAMS, null)) }
+        combine(core, extras, threadFailed, defaults) { c, e, failed, d -> buildState(c, e, failed, d) }
             .stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState(chatId = chatId, isDraft = chatId == null))
     }
 
@@ -190,6 +216,8 @@ class ChatViewModel(
         val generating: Boolean,
     )
 
+    private data class Defaults(val params: GenParams, val promptId: String?)
+
     private data class Extras(
         val models: List<ModelInfo>,
         val prompts: List<SystemPrompt>,
@@ -198,7 +226,7 @@ class ChatViewModel(
         val editing: String?,
     )
 
-    private fun buildState(c: Core, e: Extras, threadFailed: Boolean): ChatUiState {
+    private fun buildState(c: Core, e: Extras, threadFailed: Boolean, defaults: Defaults): ChatUiState {
         if (chatId == null) {
             val d = c.draft
             return ChatUiState(
@@ -217,6 +245,8 @@ class ChatViewModel(
                 params = d.params,
                 generating = false,
                 canSend = c.meta.ready && d.modelId != null && !c.meta.sending,
+                defaultParams = defaults.params,
+                defaultPromptId = defaults.promptId,
             )
         }
         val chat = (c.load as? ChatLoad.Loaded)?.chat
@@ -242,6 +272,8 @@ class ChatViewModel(
             editingMessageId = e.editing,
             thinkingOverrides = e.thinking,
             canSend = chat != null && !c.generating && !failed,
+            defaultParams = defaults.params,
+            defaultPromptId = defaults.promptId,
         )
     }
 
