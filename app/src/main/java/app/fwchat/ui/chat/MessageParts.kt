@@ -503,12 +503,12 @@ internal fun LiveThinking(
         when (mode) {
             ThinkingMode.COLLAPSED -> Unit
             ThinkingMode.PREVIEW -> {
-                // Les dernières lignes tant que le modèle réfléchit (on suit le flux); sinon le début, comme le rendu final.
-                ThinkingText(m.id, reasoning, thinkStyle, streaming = thinking, preview = true, fromEnd = thinking)
+                // Toujours les 5 PREMIÈRES lignes, fixes même si la réflexion continue (même rendu que le final).
+                ThinkingText(m.id, reasoning, thinkStyle, streaming = thinking, preview = true)
                 ShowAllButton(reasoning) { cb.onThinkingShowAll(m.id, mode) }
             }
             ThinkingMode.FULL -> {
-                ThinkingText(m.id, reasoning, thinkStyle, streaming = thinking, preview = false, fromEnd = false)
+                ThinkingText(m.id, reasoning, thinkStyle, streaming = thinking, preview = false)
                 ShrinkButton { cb.onThinkingShrink(m.id, mode) }
             }
         }
@@ -531,7 +531,7 @@ internal fun LazyListScope.thinkingItems(
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp).testTag("thinking-block")) {
             ThinkingHeader(mode, thinking = false, tokens = m.reasoningTokens) { cb.onThinkingToggle(m.id, mode) }
             if (mode == ThinkingMode.PREVIEW) {
-                ThinkingText(m.id, reasoning, thinkStyle, streaming = false, preview = true, fromEnd = false)
+                ThinkingText(m.id, reasoning, thinkStyle, streaming = false, preview = true)
                 ShowAllButton(reasoning) { cb.onThinkingShowAll(m.id, mode) }
             }
         }
@@ -606,14 +606,12 @@ private fun ThinkingText(
     style: MarkdownStyle,
     streaming: Boolean,
     preview: Boolean,
-    fromEnd: Boolean,
 ) {
     MarkdownText(
         text = text,
         style = style,
         streaming = streaming,
         maxLines = if (preview) 5 else Int.MAX_VALUE,
-        previewFromEnd = fromEnd,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         selectable = !streaming,
         resetKey = "r:$messageId",

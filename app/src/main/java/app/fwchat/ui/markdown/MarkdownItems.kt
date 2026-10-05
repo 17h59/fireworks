@@ -6,20 +6,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlin.math.roundToInt
 
 // ----------------------------------------------------------------------------------------------
 // API publique de rendu : markdownItems (paresseux), MarkdownText (petit texte), rememberMarkdownBlocks.
@@ -252,8 +258,8 @@ private fun Frame(
  * (utiliser [markdownItems] dans la LazyColumn).
  *
  * @param streaming true tant que [text] est en cours de génération (parse incrémental, marqueurs non fermés lissés).
- * @param maxLines si fini : aperçu limité à ce nombre de lignes de corps (hauteur plafonnée et rognée, sans
- *   composer tout le texte). [previewFromEnd] = true montre la FIN du texte (idéal pour un thinking en cours).
+ * @param maxLines si fini : aperçu des [maxLines] PREMIÈRES lignes (un seul `Text(maxLines, Ellipsis)` sur le début
+ *   du texte aplati : ne peut pas déborder de sa boîte et ne dépend que du début, donc fixe pendant le streaming).
  * @param color couleur du texte (Unspecified = couleur de contenu courante).
  * @param selectable true : texte sélectionnable (par bloc).
  */
@@ -264,18 +270,18 @@ fun MarkdownText(
     style: MarkdownStyle = rememberMarkdownStyle(),
     streaming: Boolean = false,
     maxLines: Int = Int.MAX_VALUE,
-    previewFromEnd: Boolean = false,
     selectable: Boolean = false,
     color: Color = Color.Unspecified,
     resetKey: Any? = null,
 ) {
     val all = rememberMarkdownBlocks(text, streaming, resetKey)
     val limited = maxLines != Int.MAX_VALUE
-    val blocks = if (limited) remember(all, maxLines, previewFromEnd) { previewBlocks(all, maxLines, previewFromEnd) } else all
     val content: @Composable () -> Unit = {
         val colored: @Composable () -> Unit = {
-            Column(modifier = if (limited) Modifier.previewClip(style, maxLines, previewFromEnd) else Modifier) {
-                MdBlockColumn(blocks, style, depth = 0, spacing = style.blockSpacing)
+            if (limited) {
+                MarkdownPreview(all, style, maxLines)
+            } else {
+                Column { MdBlockColumn(all, style, depth = 0, spacing = style.blockSpacing) }
             }
         }
         if (color != Color.Unspecified) {
@@ -289,29 +295,81 @@ fun MarkdownText(
     }
 }
 
-/** Plafonne la hauteur à [maxLines] lignes de corps et rogne le surplus (début ou fin du contenu visible). */
-private fun Modifier.previewClip(style: MarkdownStyle, maxLines: Int, fromEnd: Boolean): Modifier =
-    this.layout { measurable, constraints ->
-        val maxPx = (style.body.lineHeight.toPx() * maxLines).roundToInt().coerceAtLeast(0)
-        val p = measurable.measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
-        val h = minOf(p.height, maxPx, constraints.maxHeight)
-        layout(p.width, h) { p.place(0, if (fromEnd) h - p.height else 0) }
-    }.clipToBounds()
+/**
+ * Aperçu : les [maxLines] premières lignes. Le début est mémoïsé sur ses blocs (égalité structurelle) : tant que
+ * le début ne change pas, l'aperçu n'est ni recalculé ni recomposé, même si la fin du texte continue d'arriver.
+ * Un vrai `Text(maxLines)` : la hauteur est bornée par le texte lui-même, rien ne peut déborder sur les voisins.
+ */
+@Composable
+private fun MarkdownPreview(all: List<MdBlock>, style: MarkdownStyle, maxLines: Int) {
+    val uriHandler = LocalUriHandler.current
+    val head = remember(all, maxLines) { previewBlocks(all, maxLines) }
+    val annotated = remember(head, style, uriHandler) { previewAnnotated(head, style, uriHandler) }
+    Text(text = annotated, style = style.body, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+}
 
 /** Ne garde que les blocs nécessaires pour remplir environ [maxLines] lignes (évite de composer tout un long texte). */
-internal fun previewBlocks(blocks: List<MdBlock>, maxLines: Int, fromEnd: Boolean): List<MdBlock> {
+internal fun previewBlocks(blocks: List<MdBlock>, maxLines: Int): List<MdBlock> {
     if (blocks.size <= 1) return blocks
     val want = maxLines + 2
     var acc = 0
     val out = ArrayList<MdBlock>()
-    val order = if (fromEnd) blocks.indices.reversed() else blocks.indices
-    for (i in order) {
-        out.add(blocks[i])
-        acc += estimateLines(blocks[i])
+    for (b in blocks) {
+        out.add(b)
+        acc += estimateLines(b)
         if (acc >= want) break
     }
-    if (fromEnd) out.reverse()
     return out
+}
+
+/** Aplatit des blocs en un seul texte (un bloc ou un item de liste par ligne) pour l'aperçu à lignes fixes. */
+internal fun previewAnnotated(blocks: List<MdBlock>, style: MarkdownStyle, uriHandler: UriHandler?): AnnotatedString =
+    buildAnnotatedString { appendPreviewBlocks(blocks, style, uriHandler, sameLine = false) }
+
+private fun AnnotatedString.Builder.appendPreviewBlocks(
+    blocks: List<MdBlock>,
+    style: MarkdownStyle,
+    uriHandler: UriHandler?,
+    sameLine: Boolean,
+) {
+    var joined = sameLine // le premier bloc se place à la suite de la puce d'un item de liste
+    fun newLine() {
+        if (joined) joined = false else if (length > 0) append('\n')
+    }
+    for (b in blocks) when (b) {
+        is MdParagraph -> if (b.inlines.isNotEmpty()) {
+            newLine()
+            append(buildInlineText(b.inlines, style, uriHandler))
+        }
+        is MdHeading -> if (b.inlines.isNotEmpty()) {
+            newLine()
+            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(buildInlineText(b.inlines, style, uriHandler)) }
+        }
+        is MdCodeBlock -> {
+            newLine()
+            withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(b.code.trimEnd('\n')) }
+        }
+        is MdMathBlock -> {
+            newLine()
+            withStyle(SpanStyle(fontFamily = FontFamily.Monospace)) { append(b.text.trim()) }
+        }
+        is MdQuote -> {
+            newLine()
+            appendPreviewBlocks(b.blocks, style, uriHandler, sameLine = true)
+        }
+        is MdList -> {
+            b.items.forEachIndexed { i, item ->
+                newLine()
+                append(if (b.ordered) "${b.start + i}. " else "• ")
+                appendPreviewBlocks(item.blocks, style, uriHandler, sameLine = true)
+            }
+        }
+        is MdTable -> {
+            newLine()
+            append(b.header.joinToString(" | ") { plainText(it) })
+        }
+        MdRule -> Unit
+    }
 }
 
 private fun estimateLines(b: MdBlock): Int = when (b) {

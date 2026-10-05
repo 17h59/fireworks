@@ -52,7 +52,6 @@ fun LazyListScope.markdownItems(
     style: MarkdownStyle = rememberMarkdownStyle(),
     streaming: Boolean = false,
     maxLines: Int = Int.MAX_VALUE,
-    previewFromEnd: Boolean = false,
     selectable: Boolean = false,
     color: Color = Color.Unspecified,
     resetKey: Any? = null,
@@ -178,12 +177,11 @@ seule la dernière tranche (≤ 80 lignes) est recomposée à chaque publication
 // message court
 MarkdownText(text = m.text)
 
-// aperçu du thinking : 5 lignes max, on voit la FIN pendant le stream, pas de composition du texte entier
+// aperçu du thinking : les 5 PREMIÈRES lignes, fixes pendant le stream, pas de composition du texte entier
 MarkdownText(
     text = thinking,
     streaming = isThinking,
     maxLines = 5,
-    previewFromEnd = true,
     style = rememberMarkdownStyle().let { it.copy(body = it.body.copy(fontSize = 14.sp, lineHeight = 20.sp)) },
     color = MaterialTheme.colorScheme.onSurfaceVariant,
     resetKey = messageId,
@@ -191,8 +189,10 @@ MarkdownText(
 ```
 
 `MarkdownText` compose tous ses blocs dans une `Column` : à réserver aux textes courts ; pour une longue réponse
-utiliser `markdownItems`. Avec `maxLines` fini, seuls les blocs nécessaires à l'aperçu sont composés et la hauteur est
-plafonnée/rognée ; « Tout afficher » = rappeler sans `maxLines` (ou avec `markdownItems`).
+utiliser `markdownItems`. Avec `maxLines` fini, seuls les premiers blocs sont aplatis en un seul `Text(maxLines,
+overflow = Ellipsis)` (un bloc ou item par ligne, mise en forme inline conservée, pas d'espacement entre blocs) : la
+hauteur est bornée par le texte lui-même (rien ne déborde) et l'aperçu ne dépend que du début du texte (fixe pendant le
+streaming). « Tout afficher » = rappeler sans `maxLines` (ou avec `markdownItems`).
 
 ## Streaming : règles de `IncrementalMarkdown`
 
