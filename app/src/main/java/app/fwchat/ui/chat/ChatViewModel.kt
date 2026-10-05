@@ -338,7 +338,7 @@ class ChatViewModel(
         val d = draft.value
         val modelId = d.modelId
         if (modelId == null) {
-            notice("Aucun modèle disponible : rechargez la liste depuis la pastille du modèle.")
+            notice("Aucun modèle disponible : recharge la liste depuis la pastille du modèle.")
             return false
         }
         val meta = draftMeta.value
