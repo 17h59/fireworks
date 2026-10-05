@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.only
@@ -95,12 +96,15 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.fwchat.AppContainer
 import app.fwchat.ui.common.GenParamsSheet
+import app.fwchat.domain.costDescription
+import app.fwchat.ui.common.CostBadge
 import app.fwchat.ui.common.ModelPickerSheet
 import app.fwchat.ui.common.PromptPickerSheet
 import kotlinx.coroutines.flow.first
@@ -531,13 +535,22 @@ private fun ChatPills(ui: ChatUiState, onModel: () -> Unit, onPrompt: () -> Unit
         }
         AssistChip(
             onClick = onModel,
-            label = { Text(modelLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            label = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(modelLabel, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (ui.modelId != null && ui.modelAvailable) {
+                        Spacer(Modifier.width(4.dp))
+                        CostBadge(ui.modelId, fontSize = 10.sp)
+                    }
+                }
+            },
             leadingIcon = { Icon(Icons.Outlined.Memory, contentDescription = null, modifier = Modifier.size(18.dp)) },
             trailingIcon = { Icon(Icons.Filled.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp)) },
             colors = colors,
             border = null,
             modifier = Modifier.weight(1f, fill = false).semantics {
-                contentDescription = "Modèle : $modelLabel. Appuyer pour changer."
+                contentDescription = "Modèle : $modelLabel." +
+                    (ui.modelId?.let { costDescription(it) }?.let { " $it." } ?: "") + " Appuyer pour changer."
             },
         )
         val promptLabel = ui.promptName ?: if (ui.promptLocked) "Sans prompt système" else "Aucun prompt système"
