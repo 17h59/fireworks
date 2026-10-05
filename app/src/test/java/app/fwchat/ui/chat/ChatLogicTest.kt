@@ -14,23 +14,34 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import app.fwchat.data.net.toUserMessage
+import app.fwchat.domain.FireworksException
 
 class ChatLogicTest {
 
     // ------------------------------------------------------------------ thinking
 
     @Test
-    fun thinkingDefautApercuEnStreamingEtRepliePourLHistorique() {
-        assertEquals(ThinkingMode.PREVIEW, ThinkingStates.default(messageStreaming = true))
-        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.default(messageStreaming = false))
-        assertEquals(ThinkingMode.PREVIEW, ThinkingStates.resolve(null, true))
-        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.resolve(null, false))
+    fun thinkingDefautApercuTantQueLaReponseNaPasCommence() {
+        assertEquals(ThinkingMode.PREVIEW, ThinkingStates.default(messageStreaming = true, hasContent = false))
+        assertEquals(ThinkingMode.PREVIEW, ThinkingStates.resolve(null, true, hasContent = false))
+    }
+
+    @Test
+    fun thinkingDefautReplieDesLePremierTokenDeContenuEtPourLHistorique() {
+        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.default(messageStreaming = true, hasContent = true))
+        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.default(messageStreaming = false, hasContent = false))
+        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.default(messageStreaming = false, hasContent = true))
+        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.resolve(null, true, hasContent = true))
+        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.resolve(null, false, hasContent = false))
     }
 
     @Test
     fun thinkingChoixExplicitPrimeSurLeDefautMemeALaFinDuMessage() {
-        assertEquals(ThinkingMode.FULL, ThinkingStates.resolve(ThinkingMode.FULL, messageStreaming = false))
-        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.resolve(ThinkingMode.COLLAPSED, messageStreaming = true))
+        assertEquals(ThinkingMode.FULL, ThinkingStates.resolve(ThinkingMode.FULL, messageStreaming = false, hasContent = true))
+        assertEquals(ThinkingMode.COLLAPSED, ThinkingStates.resolve(ThinkingMode.COLLAPSED, messageStreaming = true, hasContent = false))
+        // le choix explicite d'ouvrir survit au premier token de contenu
+        assertEquals(ThinkingMode.PREVIEW, ThinkingStates.resolve(ThinkingMode.PREVIEW, messageStreaming = true, hasContent = true))
     }
 
     @Test
@@ -50,7 +61,7 @@ class ChatLogicTest {
 
     @Test
     fun thinkingCycleComplet() {
-        var m = ThinkingStates.default(true)          // apercu
+        var m = ThinkingStates.default(true, hasContent = false) // apercu
         m = ThinkingStates.onShowAll(m)               // complet
         m = ThinkingStates.onHamburger(m)             // replie
         m = ThinkingStates.onHamburger(m)             // apercu
@@ -106,7 +117,7 @@ class ChatLogicTest {
             "Modèle : glm-5p3\n" +
             "Prompt système : Mon prompt\n" +
             "\n" +
-            "Vous :\nSalut\n" +
+            "Toi :\nSalut\n" +
             "\n" +
             "Assistant (glm-5p3) :\nBonjour\n"
         assertEquals(expected, text)
@@ -146,5 +157,60 @@ class ChatLogicTest {
         assertTrue(meta.endsWith("240 tokens"))
         assertNull(ConversationFormatter.meta(message("2")))
         assertTrue(ConversationFormatter.meta(m.copy(edited = true))!!.endsWith("modifié"))
+    }
+
+    // ------------------------------------------------------------------ reponse tronquee
+
+    @Test
+    fun reponseTronqueeSeulementSiCompleteAvecContenuEtFinishReasonLength() {
+        val base = msg("a", Role.ASSISTANT, "Debut de reponse").copy(finishReason = "length")
+        assertTrue(base.isTruncated())
+        assertFalse(base.copy(finishReason = "stop").isTruncated())
+        assertFalse(base.copy(finishReason = null).isTruncated())
+        assertFalse(base.copy(content = "").isTruncated())
+        assertFalse(base.copy(status = MessageStatus.ERROR).isTruncated())
+        assertFalse(base.copy(status = MessageStatus.INTERRUPTED).isTruncated())
+        assertFalse(base.copy(role = Role.USER).isTruncated())
+    }
+
+    @Test
+    fun metaEtCopieMentionnentLaTroncature() {
+        val m = msg("a", Role.ASSISTANT, "Debut").copy(finishReason = "length", completionTokens = 50)
+        assertTrue(ConversationFormatter.meta(m)!!.contains("tronquée"))
+        val text = ConversationFormatter.format("T", null, null, listOf(m))
+        assertTrue(text.contains("[Réponse tronquée"))
+        val ok = ConversationFormatter.format("T", null, null, listOf(m.copy(finishReason = "stop")))
+        assertFalse(ok.contains("tronquée"))
+    }
+
+    // ------------------------------------------------------------------ type d'erreur
+
+    @Test
+    fun typeDErreurDeduitDuTexte() {
+        assertEquals(
+            ErrorKind.INVALID_KEY,
+            ErrorKinds.classify(FireworksException.Unauthorized("x").toUserMessage()),
+        )
+        assertEquals(ErrorKind.INVALID_KEY, ErrorKinds.classify("Clé API manquante"))
+        assertEquals(
+            ErrorKind.MODEL_NOT_FOUND,
+            ErrorKinds.classify(FireworksException.ModelNotFound("x").toUserMessage()),
+        )
+        assertEquals(
+            ErrorKind.CUT_DURING_REASONING,
+            ErrorKinds.classify("Coupé pendant la réflexion: augmente les tokens max."),
+        )
+        assertEquals(ErrorKind.OTHER, ErrorKinds.classify(FireworksException.RateLimited("x", null).toUserMessage()))
+        assertEquals(ErrorKind.OTHER, ErrorKinds.classify("Réponse vide du modèle."))
+        assertEquals(ErrorKind.OTHER, ErrorKinds.classify(null))
+    }
+
+    @Test
+    fun erreurDejaVisibleDansLeFilNEstPasRepetee() {
+        val failed = msg("e", Role.ASSISTANT, "", MessageStatus.ERROR).copy(error = "Boom")
+        assertTrue(ErrorKinds.isShownInline("Boom", listOf(msg("u", Role.USER, "Q"), failed)))
+        assertFalse(ErrorKinds.isShownInline("Autre", listOf(failed)))
+        assertFalse(ErrorKinds.isShownInline("Boom", listOf(failed.copy(status = MessageStatus.COMPLETE))))
+        assertFalse(ErrorKinds.isShownInline("Boom", emptyList()))
     }
 }

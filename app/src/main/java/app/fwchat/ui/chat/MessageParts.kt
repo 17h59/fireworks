@@ -1,9 +1,12 @@
 package app.fwchat.ui.chat
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,7 +20,9 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.outlined.CallSplit
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
@@ -26,6 +31,8 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,11 +52,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -79,7 +88,7 @@ private val USER_BUBBLE_SHAPE = RoundedCornerShape(20.dp, 20.dp, 6.dp, 20.dp)
 /** Message utilisateur court (au plus [LongText.THRESHOLD_CHARS] caractères): rendu markdown dans une bulle. */
 @Composable
 internal fun UserBubble(text: String, style: MarkdownStyle) {
-    BubbleSurface(USER_BUBBLE_SHAPE, top = 12.dp, bottom = 2.dp) {
+    BubbleSurface(USER_BUBBLE_SHAPE, top = 12.dp, bottom = 2.dp, speaker = "Toi") {
         MarkdownText(text = text, style = style, selectable = true)
     }
 }
@@ -89,12 +98,15 @@ private fun BubbleSurface(
     shape: Shape,
     top: Dp,
     bottom: Dp,
+    /** Annonce « Toi » pour les lecteurs d'écran (premier élément de la bulle seulement). */
+    speaker: String? = null,
     content: @Composable () -> Unit,
 ) {
     Box(
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = top, bottom = bottom),
         contentAlignment = Alignment.CenterEnd,
     ) {
+        if (speaker != null) SpeakerMarker(speaker, Modifier.align(Alignment.TopStart))
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             contentColor = MaterialTheme.colorScheme.onSurface,
@@ -113,7 +125,7 @@ private fun BubbleSurface(
 @Composable
 internal fun LongUserPreview(text: String, style: MarkdownStyle, onExpand: () -> Unit) {
     val preview = remember(text) { LongText.preview(text) + "…" }
-    BubbleSurface(USER_BUBBLE_SHAPE, top = 12.dp, bottom = 2.dp) {
+    BubbleSurface(USER_BUBBLE_SHAPE, top = 12.dp, bottom = 2.dp, speaker = "Toi") {
         Column {
             Text(
                 text = preview,
@@ -135,7 +147,10 @@ internal fun LongUserChunk(text: String, first: Boolean, last: Boolean, style: M
         bottomEnd = if (last) 6.dp else 0.dp,
         bottomStart = if (last) 20.dp else 0.dp,
     )
-    BubbleSurface(shape, top = if (first) 12.dp else 0.dp, bottom = if (last) 2.dp else 0.dp) {
+    BubbleSurface(
+        shape, top = if (first) 12.dp else 0.dp, bottom = if (last) 2.dp else 0.dp,
+        speaker = if (first) "Toi" else null,
+    ) {
         Column(Modifier.fillMaxWidth()) {
             SelectionContainer { Text(text, style = style.body, modifier = Modifier.fillMaxWidth()) }
             if (last) TextButton(onClick = onCollapse) { Text("Réduire") }
@@ -143,8 +158,23 @@ internal fun LongUserChunk(text: String, first: Boolean, last: Boolean, style: M
     }
 }
 
+
 // ------------------------------------------------------------------------------------------------
 // Message assistant: corps en direct et pied
+
+/**
+ * Repère pour les lecteurs d'écran: annonce qui parle (« Toi » / « Assistant ») sans doubler la lecture du texte
+ * (le texte garde sa propre sémantique). 1 dp: n'a aucun effet visible sur la mise en page.
+ */
+@Composable
+internal fun SpeakerMarker(who: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier.size(1.dp).semantics {
+            heading()
+            contentDescription = who
+        },
+    )
+}
 
 /**
  * Partie vivante du message en cours: SEUL le dernier bloc (ouvert) est rendu ici — et, pour un gros bloc, sa
@@ -158,7 +188,8 @@ internal fun LiveBody(entry: LiveEntry, streaming: State<Map<String, StreamingTe
     val parts = entry.markdown.parts(content)
     val block = parts.liveBlock
     when {
-        block != null -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 8.dp)) {
+        // Mêmes marges que le rendu final (haut 0, bas = espacement de bloc): pas de saut à la fin du flux.
+        block != null -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = style.blockSpacing)) {
             MarkdownTail(block = block, fromSlice = parts.liveFromSlice, style = style)
         }
         (live?.reasoning).isNullOrEmpty() -> Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
@@ -175,15 +206,15 @@ internal fun LiveBody(entry: LiveEntry, streaming: State<Map<String, StreamingTe
 internal fun AssistantFooter(ti: ThreadItem, generating: Boolean, cb: MessageCallbacks) {
     val m = ti.message
     Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
-        when (m.status) {
-            MessageStatus.ERROR -> ErrorBlock(m, generating, cb)
-            MessageStatus.INTERRUPTED -> Text(
+        when {
+            m.status == MessageStatus.ERROR -> ErrorBlock(m, generating, cb)
+            m.status == MessageStatus.INTERRUPTED -> Text(
                 "Interrompu",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
             )
-            else -> Unit
+            m.isTruncated() -> TruncatedNotice(m, generating, cb)
         }
         if (m.status != MessageStatus.ERROR) {
             ConversationFormatter.meta(m)?.let { meta ->
@@ -199,25 +230,76 @@ internal fun AssistantFooter(ti: ThreadItem, generating: Boolean, cb: MessageCal
     }
 }
 
+/** Réponse coupée par la limite de tokens (finish_reason = length) alors qu'elle a un contenu partiel. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TruncatedNotice(m: Message, generating: Boolean, cb: MessageCallbacks) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        Column(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp, end = 4.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(
+                    Icons.Outlined.ErrorOutline,
+                    contentDescription = null,
+                    modifier = Modifier.padding(top = 2.dp).size(20.dp),
+                )
+                Text(
+                    "Réponse tronquée (limite de tokens atteinte)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+                )
+            }
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.End),
+            ) {
+                TextButton(onClick = cb.onOpenParams) { Text("Paramètres") }
+                TextButton(onClick = { cb.onRegenerate(m.id) }, enabled = !generating) { Text("Réessayer") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ErrorBlock(m: Message, generating: Boolean, cb: MessageCallbacks) {
+    val kind = ErrorKinds.classify(m.error)
     Surface(
         color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
         shape = RoundedCornerShape(14.dp),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
-        Row(
-            Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.ErrorOutline, contentDescription = null, modifier = Modifier.size(20.dp))
-            Text(
-                m.error ?: "Une erreur est survenue.",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 8.dp),
-            )
-            TextButton(onClick = { cb.onRetry(m.id) }, enabled = !generating) { Text("Réessayer") }
+        Column(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 4.dp, end = 4.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(
+                    Icons.Outlined.ErrorOutline,
+                    contentDescription = null,
+                    modifier = Modifier.padding(top = 2.dp).size(20.dp),
+                )
+                Text(
+                    m.error ?: "Une erreur est survenue.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f).padding(horizontal = 10.dp),
+                )
+            }
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(0.dp, Alignment.End),
+            ) {
+                when (kind) {
+                    ErrorKind.INVALID_KEY -> TextButton(onClick = cb.onOpenSettings) { Text("Réglages") }
+                    ErrorKind.MODEL_NOT_FOUND -> TextButton(onClick = cb.onOpenModels) { Text("Choisir un modèle") }
+                    ErrorKind.CUT_DURING_REASONING -> TextButton(onClick = cb.onOpenParams) { Text("Paramètres") }
+                    ErrorKind.OTHER -> TextButton(onClick = { cb.onRetry(m.id) }, enabled = !generating) {
+                        Text("Réessayer")
+                    }
+                }
+            }
         }
     }
 }
@@ -225,39 +307,90 @@ private fun ErrorBlock(m: Message, generating: Boolean, cb: MessageCallbacks) {
 // ------------------------------------------------------------------------------------------------
 // Barre d'actions
 
+/**
+ * Sous un message: [chevrons de versions] puis Copier, Modifier, (assistant) Régénérer et UN menu ⋮ plat
+ * (« Nouveau chat à partir d'ici », « Supprimer le message »). Toutes les zones tactiles font 48 dp; les deux
+ * groupes passent à la ligne (FlowRow) si la largeur ou la taille de police l'exige.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun ActionsBar(ti: ThreadItem, assistant: Boolean, generating: Boolean, cb: MessageCallbacks) {
     val m = ti.message
-    Row(
+    Column(
         Modifier.fillMaxWidth().padding(horizontal = if (assistant) 8.dp else 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = if (assistant) Arrangement.Start else Arrangement.End,
+        horizontalAlignment = if (assistant) Alignment.Start else Alignment.End,
     ) {
-        if (ti.siblingCount > 1) {
-            val index = ti.siblingIndex
-            ActionIcon(
-                Icons.Filled.ChevronLeft, "Version précédente",
-                enabled = !generating && index > 0, width = 36.dp,
-            ) { cb.onSibling(ti, -1) }
+        if (!assistant && m.edited) {
             Text(
-                "${index + 1}/${ti.siblingCount}",
-                style = MaterialTheme.typography.labelLarge,
+                "modifié",
+                style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.semantics { contentDescription = "Version ${index + 1} sur ${ti.siblingCount}" },
+                modifier = Modifier.padding(horizontal = 4.dp),
             )
-            ActionIcon(
-                Icons.Filled.ChevronRight, "Version suivante",
-                enabled = !generating && index < ti.siblingCount - 1, width = 36.dp,
-            ) { cb.onSibling(ti, +1) }
-            Spacer(Modifier.width(if (assistant) 6.dp else 4.dp))
         }
-        ActionIcon(Icons.Outlined.ContentCopy, "Copier le message") { cb.onCopy(m.content) }
-        ActionIcon(Icons.Outlined.Edit, "Modifier le message", enabled = !generating) { cb.onStartEdit(m.id) }
-        if (assistant) {
-            ActionIcon(Icons.Outlined.Refresh, "Régénérer la réponse", enabled = !generating) { cb.onRegenerate(m.id) }
+        FlowRow(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, if (assistant) Alignment.Start else Alignment.End),
+            verticalArrangement = Arrangement.Center,
+        ) {
+            if (ti.siblingCount > 1) {
+                val index = ti.siblingIndex
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ActionIcon(
+                        Icons.Filled.ChevronLeft, "Version précédente",
+                        enabled = !generating && index > 0,
+                    ) { cb.onSibling(ti, -1) }
+                    Text(
+                        "${index + 1}/${ti.siblingCount}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.semantics { contentDescription = "Version ${index + 1} sur ${ti.siblingCount}" },
+                    )
+                    ActionIcon(
+                        Icons.Filled.ChevronRight, "Version suivante",
+                        enabled = !generating && index < ti.siblingCount - 1,
+                    ) { cb.onSibling(ti, +1) }
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ActionIcon(Icons.Outlined.ContentCopy, "Copier le message") { cb.onCopy(m.content) }
+                ActionIcon(Icons.Outlined.Edit, "Modifier le message", enabled = !generating) { cb.onStartEdit(m.id) }
+                if (assistant) {
+                    ActionIcon(Icons.Outlined.Refresh, "Régénérer la réponse", enabled = !generating) {
+                        cb.onRegenerate(m.id)
+                    }
+                }
+                MoreMenu(m.id, generating, cb)
+            }
         }
-        ActionIcon(Icons.AutoMirrored.Outlined.CallSplit, "Forker la conversation ici") { cb.onFork(m.id) }
-        ActionIcon(Icons.Outlined.Delete, "Supprimer le message", enabled = !generating) { cb.onDelete(m.id) }
+    }
+}
+
+/** Menu ⋮ plat: deux entrées, pas de sous-menu. */
+@Composable
+private fun MoreMenu(messageId: String, generating: Boolean, cb: MessageCallbacks) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        ActionIcon(Icons.Filled.MoreVert, "Plus d'actions sur le message") { open = true }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("Nouveau chat à partir d'ici") },
+                leadingIcon = { Icon(Icons.AutoMirrored.Outlined.CallSplit, contentDescription = null) },
+                onClick = {
+                    open = false
+                    cb.onFork(messageId)
+                },
+            )
+            DropdownMenuItem(
+                text = { Text("Supprimer le message") },
+                leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                enabled = !generating,
+                onClick = {
+                    open = false
+                    cb.onDelete(messageId)
+                },
+            )
+        }
     }
 }
 
@@ -266,10 +399,9 @@ private fun ActionIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     description: String,
     enabled: Boolean = true,
-    width: Dp = 44.dp,
     onClick: () -> Unit,
 ) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(width = width, height = 48.dp)) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp)) {
         Icon(icon, contentDescription = description, modifier = Modifier.size(20.dp))
     }
 }
@@ -277,6 +409,12 @@ private fun ActionIcon(
 // ------------------------------------------------------------------------------------------------
 // Édition dans la liste
 
+/**
+ * Édition d'un message. Disposition adaptative (police jusqu'à 2.0, 360 dp): le bouton principal d'un message
+ * utilisateur (« Envoyer et régénérer ») occupe toute la largeur; « Enregistrer » (sans renvoi) et « Annuler »
+ * passent à la ligne si besoin.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun EditBox(message: Message, isUser: Boolean, generating: Boolean, cb: MessageCallbacks) {
     // Jamais de gros texte dans le Bundle (TransactionTooLargeException): au-delà de 50 000 caractères, non sauvegardé.
@@ -302,24 +440,31 @@ internal fun EditBox(message: Message, isUser: Boolean, generating: Boolean, cb:
             shape = RoundedCornerShape(16.dp),
             textStyle = MaterialTheme.typography.bodyLarge,
         )
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = cb.onCancelEdit) { Text("Annuler") }
-            if (isUser) {
+        if (isUser) {
+            Button(
+                onClick = { cb.onSendEdit(message.id, text) },
+                enabled = text.isNotBlank() && !generating,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            ) { Text("Envoyer et régénérer", style = MaterialTheme.typography.titleMedium) }
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TextButton(onClick = cb.onCancelEdit, modifier = Modifier.heightIn(min = 48.dp)) { Text("Annuler") }
                 OutlinedButton(
                     onClick = { cb.onSaveEdit(message.id, text) },
                     enabled = text.isNotBlank(),
-                    modifier = Modifier.heightIn(min = 40.dp),
+                    modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text("Enregistrer", style = MaterialTheme.typography.labelMedium) }
-                Button(
-                    onClick = { cb.onSendEdit(message.id, text) },
-                    enabled = text.isNotBlank() && !generating,
-                    modifier = Modifier.heightIn(min = 52.dp),
-                ) { Text("Envoyer", style = MaterialTheme.typography.titleMedium) }
-            } else {
+            }
+        } else {
+            FlowRow(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TextButton(onClick = cb.onCancelEdit, modifier = Modifier.heightIn(min = 48.dp)) { Text("Annuler") }
                 Button(
                     onClick = { cb.onSaveEdit(message.id, text) },
                     enabled = text.isNotBlank(),
@@ -333,12 +478,16 @@ internal fun EditBox(message: Message, isUser: Boolean, generating: Boolean, cb:
 // ------------------------------------------------------------------------------------------------
 // Bloc de réflexion (thinking)
 
-/** Réflexion d'un message en cours: texte lu DANS cet item. Invisible tant qu'aucune réflexion n'est arrivée. */
+/**
+ * Réflexion d'un message en cours: texte lu DANS cet item. Invisible tant qu'aucune réflexion n'est arrivée.
+ * Le mode dépend du contenu de la réponse (lu ici): aperçu tant qu'elle n'a pas commencé, replié ensuite,
+ * sauf choix explicite de l'utilisateur ([override]).
+ */
 @Composable
 internal fun LiveThinking(
     m: Message,
     streaming: State<Map<String, StreamingText>>,
-    mode: ThinkingMode,
+    override: ThinkingMode?,
     cb: MessageCallbacks,
     thinkStyle: MarkdownStyle,
 ) {
@@ -347,12 +496,14 @@ internal fun LiveThinking(
     if (reasoning.isEmpty()) return
     val content = live?.content ?: m.content
     val thinking = ThinkingStates.isThinking(MessageStatus.STREAMING, content)
+    val mode = ThinkingStates.resolve(override, messageStreaming = true, hasContent = content.isNotEmpty())
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(top = 8.dp)) {
         ThinkingHeader(mode, thinking, tokens = null) { cb.onThinkingToggle(m.id, mode) }
         when (mode) {
             ThinkingMode.COLLAPSED -> Unit
             ThinkingMode.PREVIEW -> {
-                ThinkingText(m.id, reasoning, thinkStyle, streaming = thinking, preview = true, fromEnd = true)
+                // Les dernières lignes tant que le modèle réfléchit (on suit le flux); sinon le début, comme le rendu final.
+                ThinkingText(m.id, reasoning, thinkStyle, streaming = thinking, preview = true, fromEnd = thinking)
                 ShowAllButton(reasoning) { cb.onThinkingShowAll(m.id, mode) }
             }
             ThinkingMode.FULL -> {
@@ -403,6 +554,7 @@ internal fun LazyListScope.thinkingItems(
 private fun ThinkingHeader(mode: ThinkingMode, thinking: Boolean, tokens: Int?, onToggle: () -> Unit) {
     val open = mode != ThinkingMode.COLLAPSED
     val description = if (open) "Replier la réflexion" else "Afficher la réflexion"
+    val chevronRotation by animateFloatAsState(if (open) 180f else 0f, label = "thinking-chevron")
     Row(
         Modifier
             .clip(RoundedCornerShape(12.dp))
@@ -423,6 +575,13 @@ private fun ThinkingHeader(mode: ThinkingMode, thinking: Boolean, tokens: Int?, 
             "Réflexion",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // Chevron: ouvert (vers le haut) / fermé (vers le bas).
+        Icon(
+            Icons.Filled.ExpandMore,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 2.dp).size(18.dp).rotate(chevronRotation),
         )
         if (thinking) {
             Spacer(Modifier.width(10.dp))

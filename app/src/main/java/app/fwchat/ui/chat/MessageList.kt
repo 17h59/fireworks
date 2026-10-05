@@ -64,6 +64,12 @@ class MessageCallbacks(
     val onThinkingToggle: (String, ThinkingMode) -> Unit,
     val onThinkingShowAll: (String, ThinkingMode) -> Unit,
     val onThinkingShrink: (String, ThinkingMode) -> Unit,
+    /** Erreur « clé API invalide »: ouvre les Réglages. */
+    val onOpenSettings: () -> Unit = {},
+    /** Erreur « modèle introuvable »: ouvre le sélecteur de modèle. */
+    val onOpenModels: () -> Unit = {},
+    /** Réponse tronquée / coupée pendant la réflexion: ouvre les paramètres de génération du chat. */
+    val onOpenParams: () -> Unit = {},
 )
 
 private data class FollowSignal(
@@ -284,14 +290,19 @@ private fun LazyListScope.assistantItems(
     val m = ti.message
     val live = m.status == MessageStatus.STREAMING
     val editing = ui.editingMessageId == m.id
-    val mode = ThinkingStates.resolve(ui.thinkingOverrides[m.id], messageStreaming = live)
+    val override = ui.thinkingOverrides[m.id]
 
-    // 1. Bloc de réflexion
+    // Repère pour les lecteurs d'écran: qui parle (1 dp, ne change pas la mise en page).
+    item(key = "m:${m.id}:who", contentType = "who") { SpeakerMarker("Assistant") }
+
+    // 1. Bloc de réflexion. En direct, le mode dépend du contenu (lu dans l'item): aperçu tant que la réponse n'a
+    // pas commencé, replié dès le premier token. Terminé: replié sauf choix explicite.
     if (live) {
         item(key = "m:${m.id}:think", contentType = "think") {
-            LiveThinking(m, streaming, mode, cb, thinkStyle)
+            LiveThinking(m, streaming, override, cb, thinkStyle)
         }
     } else if (!m.reasoning.isNullOrBlank()) {
+        val mode = ThinkingStates.resolve(override, messageStreaming = false, hasContent = m.content.isNotEmpty())
         thinkingItems(m, m.reasoning, mode, cb, thinkStyle, loader)
     }
 

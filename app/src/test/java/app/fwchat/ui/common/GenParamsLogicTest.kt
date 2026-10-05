@@ -81,4 +81,23 @@ class GenParamsLogicTest {
         assertNull(formatContext(0))
         assertEquals("1 240".length, formatInt(1240).length)
     }
+
+    @Test
+    fun parametresPersonnalisesSiDifferentDesDefauts() {
+        val defaults = GenParams(maxTokens = 16384)
+        assertFalse(GenParamsLogic.isCustomized(defaults, defaults.copy()))
+        assertTrue(GenParamsLogic.isCustomized(defaults.copy(temperature = 0.2), defaults))
+        assertTrue(GenParamsLogic.isCustomized(defaults.copy(stop = listOf("x")), defaults))
+        assertTrue(GenParamsLogic.isCustomized(defaults, defaults.copy(reasoningEffort = ReasoningEffort.LOW)))
+    }
+
+    @Test
+    fun echecDeRechargementDesModelesEnFrancais() {
+        assertEquals(
+            "Clé API invalide ou manquante. Vérifie-la dans les réglages.",
+            refreshErrorMessage(app.fwchat.domain.FireworksException.Unauthorized("401")),
+        )
+        assertEquals("boom", refreshErrorMessage(IllegalStateException("boom")))
+        assertEquals("Échec du rechargement des modèles.", refreshErrorMessage(IllegalStateException()))
+    }
 }

@@ -52,6 +52,9 @@ object GenParamsLogic {
 
     fun removeStop(params: GenParams, word: String): GenParams = params.copy(stop = params.stop - word)
 
+    /** Les paramètres du chat diffèrent-ils des défauts globaux (pastille sur l'icône des paramètres)? */
+    fun isCustomized(params: GenParams, defaults: GenParams): Boolean = params != defaults
+
     /** Texte tapé -> entier positif, null si vide ou invalide. */
     fun parseInt(text: String): Int? = text.trim().toIntOrNull()?.takeIf { it >= 0 }
 

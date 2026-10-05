@@ -35,6 +35,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -183,6 +185,8 @@ fun GenParamsSheet(
     onChange: (GenParams) -> Unit,
     modelId: String?,
     onDismiss: () -> Unit,
+    /** Sous-titre sous le titre de la feuille (null = aucun). */
+    subtitle: String? = "Pour cette conversation",
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -197,7 +201,16 @@ fun GenParamsSheet(
                 .padding(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text("Paramètres de génération", style = MaterialTheme.typography.titleLarge)
+            Column {
+                Text("Paramètres de génération", style = MaterialTheme.typography.titleLarge)
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             GenParamsEditor(params = params, onChange = onChange, modelId = modelId)
         }
     }
@@ -262,6 +275,7 @@ private fun DecimalParam(
             onValueChange = { onChange(GenParamsLogic.snap(it.toDouble(), step).coerceIn(range)) },
             valueRange = range.start.toFloat()..range.endInclusive.toFloat(),
             enabled = value != null,
+            modifier = Modifier.semantics { contentDescription = title },
         )
         Hint(hint)
     }
@@ -288,6 +302,7 @@ private fun IntSliderParam(
             onValueChange = { onChange(it.toInt().coerceIn(range)) },
             valueRange = range.first.toFloat()..range.last.toFloat(),
             enabled = value != null,
+            modifier = Modifier.semantics { contentDescription = title },
         )
         Hint(hint)
     }

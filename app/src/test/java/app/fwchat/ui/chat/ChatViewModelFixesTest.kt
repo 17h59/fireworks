@@ -134,6 +134,41 @@ class ChatViewModelFixesTest {
         }
     }
 
+    @Test
+    fun erreurDeGenerationDejaVisibleDansLeFilNEstPasRepeteeEnSnackbar() = runTest(dispatcher) {
+        val id = existingChat()
+        val user = repo.addMessage(id, null, Role.USER, "Question")
+        val failed = repo.addMessage(id, user.id, Role.ASSISTANT, "", MessageStatus.ERROR)
+        repo.modify(failed.id) { it.copy(error = "Boom visible") }
+        val vm = vm(id, models("glm-5p3"))
+        advanceUntilIdle()
+        vm.engineNotices.test {
+            engine.events.emit(EngineEvent.Error("Boom visible", chatId = id))
+            engine.events.emit(EngineEvent.Error("Une reponse est deja en cours", chatId = id))
+            assertEquals(EngineNotice.Message("Une reponse est deja en cours"), awaitItem())
+            engine.events.emit(EngineEvent.Unauthorized)
+            assertEquals(EngineNotice.Unauthorized, awaitItem())
+            expectNoEvents()
+        }
+    }
+
+    @Test
+    fun letatPorteLesParametresEtLePromptParDefautDesReglages() = runTest(dispatcher) {
+        val id = existingChat()
+        val settings = FakeSettingsRepo(defaultModel = "accounts/fireworks/models/glm-5p3", defaultPrompt = "p1")
+        settings.setDefaultParams(GenParams(temperature = 0.3, maxTokens = 100))
+        val vm = ChatViewModel(
+            chats = repo, prompts = prompts, settings = settings, models = models("glm-5p3"), engine = engine,
+            chatId = id, appScope = CoroutineScope(dispatcher + SupervisorJob()),
+        )
+        advanceUntilIdle()
+        assertEquals(GenParams(temperature = 0.3, maxTokens = 100), vm.state.value.defaultParams)
+        assertEquals("p1", vm.state.value.defaultPromptId)
+        settings.setDefaultSystemPrompt(null)
+        advanceUntilIdle()
+        assertEquals(null, vm.state.value.defaultPromptId)
+    }
+
     // ------------------------------------------------------------------ 9. exceptions de lecture
 
     @Test

@@ -43,6 +43,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.fwchat.data.net.toUserMessage
+import app.fwchat.domain.FireworksException
 import app.fwchat.domain.ModelInfo
 import kotlinx.coroutines.launch
 
@@ -91,7 +93,7 @@ fun ModelPickerSheet(
                         scope.launch {
                             val r = onRefresh()
                             refreshing = false
-                            error = r.exceptionOrNull()?.let { it.message ?: "Échec du rechargement des modèles." }
+                            error = r.exceptionOrNull()?.let { refreshErrorMessage(it) }
                         }
                     }) { Icon(Icons.Filled.Refresh, contentDescription = "Recharger la liste des modèles") }
                 }
@@ -141,7 +143,7 @@ fun ModelPickerSheet(
                 if (filtered.isEmpty()) {
                     item(key = "empty") {
                         Text(
-                            if (models.isEmpty()) "Aucun modèle. Appuyez sur ↻ pour charger la liste." else "Aucun résultat.",
+                            if (models.isEmpty()) "Aucun modèle. Appuie sur ↻ pour charger la liste." else "Aucun résultat.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(20.dp),
@@ -153,6 +155,10 @@ fun ModelPickerSheet(
         }
     }
 }
+
+/** Message lisible (en français, via `toUserMessage()`) pour un échec de rechargement de la liste. */
+internal fun refreshErrorMessage(t: Throwable): String =
+    (t as? FireworksException)?.toUserMessage() ?: t.message ?: "Échec du rechargement des modèles."
 
 /** Filtre insensible à la casse sur l'id et le nom affiché. */
 fun filterModels(models: List<ModelInfo>, query: String): List<ModelInfo> {

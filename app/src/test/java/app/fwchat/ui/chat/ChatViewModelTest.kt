@@ -432,7 +432,7 @@ class ChatViewModelTest {
             vm.copyConversation()
             val ev = awaitItem() as ChatUiEvent.CopyText
             assertTrue(ev.confirmation.startsWith("Conversation"))
-            assertTrue(ev.text.contains("Vous :\nQuestion"))
+            assertTrue(ev.text.contains("Toi :\nQuestion"))
             assertTrue(ev.text.contains("Reponse"))
         }
     }

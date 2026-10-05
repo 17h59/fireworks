@@ -5,11 +5,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,13 +24,20 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -38,12 +47,15 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -67,11 +79,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -83,9 +102,11 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.fwchat.AppContainer
+import app.fwchat.ui.common.GenParamsLogic
 import app.fwchat.ui.common.GenParamsSheet
 import app.fwchat.ui.common.ModelPickerSheet
 import app.fwchat.ui.common.PromptPickerSheet
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -237,8 +258,27 @@ fun ChatScreen(
             onThinkingToggle = vm::toggleThinking,
             onThinkingShowAll = vm::showAllThinking,
             onThinkingShrink = vm::shrinkThinking,
+            onOpenSettings = { currentOnOpenSettings() },
+            onOpenModels = { showModels = true },
+            onOpenParams = { showParams = true },
         )
     }
+
+    // Premier positionnement en bas d'un chat existant: la liste reste invisible tant qu'elle n'y est pas
+    // (sinon on verrait le début de la conversation une frame avant le défilement).
+    var positioned by remember(chatId) { mutableStateOf(false) }
+    LaunchedEffect(ui.loaded, ui.thread.isEmpty()) {
+        if (!ui.loaded) return@LaunchedEffect
+        if (ui.thread.isNotEmpty() && following.value) {
+            snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+            listState.scrollToBottom()
+        }
+        positioned = true
+    }
+    val editing = ui.editingMessageId != null
+    // Retour pendant une édition: annule l'édition (au lieu de quitter le chat).
+    BackHandler(enabled = editing) { vm.cancelEdit() }
+    val paramsCustomized = GenParamsLogic.isCustomized(ui.params, ui.defaultParams)
 
     val showDownButton by remember { derivedStateOf { !following.value && listState.canScrollForward } }
 
@@ -251,14 +291,18 @@ fun ChatScreen(
             TopAppBar(
                 windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Top),
                 title = {
-                    Text(
-                        text = ui.title.ifBlank { "Nouveau chat" },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = if (ui.isDraft) Modifier else Modifier.clickable(
-                            onClickLabel = "Renommer le chat",
-                        ) { showRename = true },
-                    )
+                    // Chat existant pas encore chargé: titre vide (pas de « Nouveau chat » trompeur le temps d'un chargement).
+                    val titleText = if (!ui.isDraft && !ui.loaded) "" else ui.title.ifBlank { "Nouveau chat" }
+                    Box(
+                        Modifier.heightIn(min = 48.dp).then(
+                            if (ui.isDraft) Modifier else Modifier.clickable(onClickLabel = "Renommer le chat") {
+                                showRename = true
+                            },
+                        ),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        Text(text = titleText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onOpenDrawer) {
@@ -266,8 +310,22 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    if (!ui.isDraft) {
+                        IconButton(onClick = onNewChat) {
+                            Icon(Icons.Outlined.Add, contentDescription = "Nouveau chat")
+                        }
+                    }
                     IconButton(onClick = { showParams = true }) {
-                        Icon(Icons.Outlined.Tune, contentDescription = "Paramètres de génération")
+                        BadgedBox(badge = { if (paramsCustomized) Badge() }) {
+                            Icon(
+                                Icons.Outlined.Tune,
+                                contentDescription = if (paramsCustomized) {
+                                    "Paramètres de génération (personnalisés pour ce chat)"
+                                } else {
+                                    "Paramètres de génération"
+                                },
+                            )
+                        }
                     }
                     if (!ui.isDraft) {
                         Box {
@@ -329,7 +387,7 @@ fun ChatScreen(
                         callbacks = callbacks,
                         listState = listState,
                         following = following,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().alpha(if (positioned) 1f else 0f),
                         contentPadding = PaddingValues(top = 4.dp, bottom = 16.dp),
                     )
                     if (ui.thread.isEmpty() && ui.loaded) {
@@ -344,9 +402,14 @@ fun ChatScreen(
                     },
                     modifier = Modifier.align(Alignment.BottomEnd),
                 )
-                SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter))
+                // Le bouton ↓ occupe le coin bas-droit: le snackbar passe au-dessus tant qu'il est visible.
+                val snackbarLift by animateDpAsState(if (showDownButton) 64.dp else 0.dp, label = "snackbar-lift")
+                SnackbarHost(snackbar, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = snackbarLift))
             }
-            Composer(
+            if (editing) {
+                // Édition en cours: pas de champ de saisie; on garde juste la marge du clavier / de la barre de navigation.
+                Spacer(Modifier.fillMaxWidth().imePadding().navigationBarsPadding())
+            } else Composer(
                 text = draftText,
                 onTextChange = ::setDraft,
                 generating = ui.generating,
@@ -381,9 +444,14 @@ fun ChatScreen(
         PromptPickerSheet(
             prompts = ui.prompts,
             selectedId = ui.selectedPromptId,
+            defaultId = ui.defaultPromptId,
             onSelect = { id ->
                 vm.setPrompt(id)
                 showPrompts = false
+            },
+            onManage = {
+                showPrompts = false
+                onOpenPrompts()
             },
             onDismiss = { showPrompts = false },
         )
@@ -457,6 +525,11 @@ private fun copyToClipboard(context: Context, text: String): Boolean = try {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatPills(ui: ChatUiState, onModel: () -> Unit, onPrompt: () -> Unit, modifier: Modifier = Modifier) {
+    // Pas de pastilles « fausses » (« Choisir un modèle ») avant la fin du chargement: on réserve la hauteur.
+    if (!ui.loaded) {
+        Spacer(modifier.fillMaxWidth().height(48.dp))
+        return
+    }
     val container = MaterialTheme.colorScheme.surfaceContainerHigh
     val colors = AssistChipDefaults.assistChipColors(containerColor = container)
     Row(
@@ -521,16 +594,16 @@ private fun EmptyState(ui: ChatUiState, modifier: Modifier = Modifier) {
             modifier = Modifier.size(32.dp),
         )
         Text(
-            if (ui.isDraft) "Que puis-je faire pour vous ?" else "Cette conversation est vide.",
+            if (ui.isDraft) "Que puis-je faire pour toi ?" else "Cette conversation est vide.",
             style = MaterialTheme.typography.titleLarge,
             textAlign = TextAlign.Center,
         )
         if (ui.isDraft) {
             Text(
                 if (ui.models.isEmpty()) {
-                    "Aucun modèle chargé : ouvrez la pastille du modèle pour recharger la liste."
+                    "Aucun modèle chargé : ouvre la pastille du modèle pour recharger la liste."
                 } else {
-                    "Choisissez le modèle et le prompt système ci-dessus avant d'écrire : le prompt sera figé au premier message."
+                    "Choisis le modèle et le prompt système ci-dessus avant d'écrire : le prompt sera figé au premier message."
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -574,7 +647,16 @@ private fun SystemPromptDialog(name: String?, text: String?, onCopy: (String) ->
 
 @Composable
 private fun RenameDialog(initial: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
-    var value by remember { mutableStateOf(initial) }
+    // Texte initial entièrement sélectionné, focus (donc clavier) dès l'ouverture, « OK » du clavier = Renommer.
+    var value by remember { mutableStateOf(TextFieldValue(initial, TextRange(0, initial.length))) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        try {
+            focus.requestFocus()
+        } catch (_: IllegalStateException) {
+            // Le champ n'est pas encore attaché: sans importance.
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Renommer le chat") },
@@ -584,11 +666,13 @@ private fun RenameDialog(initial: String, onConfirm: (String) -> Unit, onDismiss
                 onValueChange = { value = it },
                 singleLine = true,
                 placeholder = { Text("Nouveau chat") },
-                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { if (value.text.isNotBlank()) onConfirm(value.text) }),
+                modifier = Modifier.fillMaxWidth().focusRequester(focus),
             )
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(value) }, enabled = value.isNotBlank()) { Text("Renommer") }
+            TextButton(onClick = { onConfirm(value.text) }, enabled = value.text.isNotBlank()) { Text("Renommer") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Annuler") } },
     )
@@ -605,6 +689,7 @@ private fun ScrollDownButton(visible: Boolean, onClick: () -> Unit, modifier: Mo
     ) {
         SmallFloatingActionButton(
             onClick = onClick,
+            modifier = Modifier.minimumInteractiveComponentSize(),
             containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
             contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ) {

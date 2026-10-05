@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -193,8 +194,10 @@ private fun CopyButton(text: String, tint: androidx.compose.ui.graphics.Color) {
             copied = false
         }
     }
+    // Zone tactile 48 dp (minimumInteractiveComponentSize), pastille visuelle de 32 dp, icône de 16 dp.
     Box(
         Modifier
+            .minimumInteractiveComponentSize()
             .size(32.dp)
             .clip(CircleShape)
             .clickable(role = Role.Button, onClickLabel = "Copier le code") {
