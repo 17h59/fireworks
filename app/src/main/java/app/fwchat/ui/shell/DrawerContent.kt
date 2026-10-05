@@ -2,6 +2,7 @@ package app.fwchat.ui.shell
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -48,7 +50,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,11 +57,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -69,6 +70,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.fwchat.R
 import app.fwchat.domain.ChatSummary
+import app.fwchat.ui.common.RenameDialog
+import app.fwchat.ui.theme.FwMark
 
 /** Contenu du tiroir (à placer dans un `ModalDrawerSheet`, qui gère les insets haut/bas). */
 @OptIn(ExperimentalLayoutApi::class)
@@ -92,11 +95,17 @@ fun DrawerContent(
     val imeVisible = WindowInsets.isImeVisible
 
     Column(modifier = modifier.fillMaxSize().imePadding()) {
-        Text(
-            text = stringResource(R.string.drawer_title),
-            style = MaterialTheme.typography.titleLarge,
+        Row(
             modifier = Modifier.padding(start = 28.dp, end = 16.dp, top = 20.dp, bottom = 12.dp),
-        )
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            FwMark(size = 24.dp)
+            Text(
+                text = stringResource(R.string.drawer_title),
+                style = MaterialTheme.typography.titleLarge,
+            )
+        }
         Button(
             onClick = onNewChat,
             modifier = Modifier
@@ -171,6 +180,7 @@ fun DrawerContent(
 
 @Composable
 private fun SearchField(query: String, onQueryChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    val focusManager = LocalFocusManager.current
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
@@ -187,6 +197,7 @@ private fun SearchField(query: String, onQueryChange: (String) -> Unit, modifier
             }
         },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
         colors = TextFieldDefaults.colors(),
     )
 }
@@ -287,6 +298,7 @@ private fun ChatRow(
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp).semantics { contentDescription = desc },
                             strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.tertiary,
                         )
                     }
                     IconButton(onClick = { menuOpen = true }) {
@@ -328,7 +340,7 @@ private fun FooterEntry(icon: androidx.compose.ui.graphics.vector.ImageVector, l
             .fillMaxWidth()
             .heightIn(min = 56.dp)
             .clip(CircleShape)
-            .combinedClickable(onClick = onClick)
+            .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -336,31 +348,4 @@ private fun FooterEntry(icon: androidx.compose.ui.graphics.vector.ImageVector, l
         Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(label, style = MaterialTheme.typography.labelLarge)
     }
-}
-
-@Composable
-private fun RenameDialog(initial: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
-    var value by remember { mutableStateOf(initial) }
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.rename_chat_title)) },
-        text = {
-            OutlinedTextField(
-                value = value,
-                onValueChange = { value = it },
-                label = { Text(stringResource(R.string.rename_chat_label)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                modifier = Modifier.fillMaxWidth().focusRequester(focus),
-            )
-        },
-        confirmButton = {
-            TextButton(enabled = value.isNotBlank(), onClick = { onConfirm(value) }) {
-                Text(stringResource(R.string.action_save))
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
-    )
 }

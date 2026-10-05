@@ -38,7 +38,10 @@
 
     <!-- Onboarding -->
     <string name="onboarding_title">Bienvenue dans FW Chat</string>
-    <string name="onboarding_body">FW Chat est une application locale : tes conversations restent sur cet appareil, et ta clé API est stockée chiffrée sur le téléphone. Crée une clé sur fireworks.ai (section Clés API de ton compte), puis colle-la ci-dessous.</string>
+    <string name="onboarding_point_local">Local</string>
+    <string name="onboarding_point_key">Clé chiffrée sur ton téléphone</string>
+    <string name="onboarding_point_account">Aucun compte</string>
+    <string name="onboarding_body">Tes conversations restent sur cet appareil. Crée une clé sur fireworks.ai (section Clés API de ton compte), puis colle-la ci-dessous.</string>
     <string name="onboarding_key_label">Clé API Fireworks</string>
     <string name="onboarding_show">Afficher la clé</string>
     <string name="onboarding_hide">Masquer la clé</string>
