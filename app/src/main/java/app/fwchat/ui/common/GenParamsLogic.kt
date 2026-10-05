@@ -1,5 +1,6 @@
 package app.fwchat.ui.common
 
+import app.fwchat.data.net.GenParamsCompat
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.ReasoningEffort
 import java.util.Locale
@@ -19,10 +20,11 @@ object GenParamsLogic {
     const val INITIAL_SEED = 0L
 
     /** Certains modèles refusent reasoning_effort = none. */
-    fun supportsNoReasoning(modelId: String?): Boolean {
-        val s = modelId?.lowercase() ?: return true
-        return "glm" !in s && "gpt-oss" !in s
-    }
+    fun supportsNoReasoning(modelId: String?): Boolean = GenParamsCompat.supportsNoReasoning(modelId)
+
+    /** Valeur globale « Aucun » ignorée par le modèle (glm / gpt-oss): aide discrète dans l'éditeur. */
+    fun noReasoningIgnored(params: GenParams, modelId: String?): Boolean =
+        params.reasoningEffort == ReasoningEffort.NONE && !supportsNoReasoning(modelId)
 
     /** Options de la rangée de chips (null = « Défaut », non envoyé), dans l'ordre d'affichage. */
     fun reasoningOptions(modelId: String?): List<ReasoningEffort?> = buildList {

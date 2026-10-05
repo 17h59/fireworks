@@ -54,8 +54,6 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -102,7 +100,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import app.fwchat.AppContainer
-import app.fwchat.ui.common.GenParamsLogic
 import app.fwchat.ui.common.GenParamsSheet
 import app.fwchat.ui.common.ModelPickerSheet
 import app.fwchat.ui.common.PromptPickerSheet
@@ -278,7 +275,6 @@ fun ChatScreen(
     val editing = ui.editingMessageId != null
     // Retour pendant une édition: annule l'édition (au lieu de quitter le chat).
     BackHandler(enabled = editing) { vm.cancelEdit() }
-    val paramsCustomized = GenParamsLogic.isCustomized(ui.params, ui.defaultParams)
 
     val showDownButton by remember { derivedStateOf { !following.value && listState.canScrollForward } }
 
@@ -316,16 +312,7 @@ fun ChatScreen(
                         }
                     }
                     IconButton(onClick = { showParams = true }) {
-                        BadgedBox(badge = { if (paramsCustomized) Badge() }) {
-                            Icon(
-                                Icons.Outlined.Tune,
-                                contentDescription = if (paramsCustomized) {
-                                    "Paramètres de génération (personnalisés pour ce chat)"
-                                } else {
-                                    "Paramètres de génération"
-                                },
-                            )
-                        }
+                        Icon(Icons.Outlined.Tune, contentDescription = "Paramètres de génération")
                     }
                     if (!ui.isDraft) {
                         Box {

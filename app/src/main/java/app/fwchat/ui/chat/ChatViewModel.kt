@@ -242,7 +242,7 @@ class ChatViewModel(
                 promptName = d.prompt?.name,
                 promptText = d.prompt?.text,
                 promptLocked = false,
-                params = d.params,
+                params = e.localParams ?: defaults.params,
                 generating = false,
                 canSend = c.meta.ready && d.modelId != null && !c.meta.sending,
                 defaultParams = defaults.params,
@@ -266,7 +266,7 @@ class ChatViewModel(
             promptName = chat?.systemPromptName,
             promptText = chat?.systemPromptText,
             promptLocked = true,
-            params = e.localParams ?: chat?.params ?: AppDefaults.GEN_PARAMS,
+            params = e.localParams ?: defaults.params,
             thread = c.thread,
             generating = c.generating,
             editingMessageId = e.editing,
@@ -287,13 +287,11 @@ class ChatViewModel(
                     if (first != null && draft.value.modelId == null) draft.update { it.copy(modelId = first) }
                 }
             }
-        } else {
-            viewModelScope.launch {
-                // Quand la base reflète les paramètres locaux, on cesse de les superposer.
-                chatLoad.collect { load ->
-                    val chat = (load as? ChatLoad.Loaded)?.chat ?: return@collect
-                    if (localParams.value == chat.params) localParams.value = null
-                }
+        }
+        viewModelScope.launch {
+            // Quand les réglages reflètent les paramètres locaux, on cesse de les superposer.
+            settings.settings.catch { }.collect { s ->
+                if (localParams.value == s.defaultParams) localParams.value = null
             }
         }
     }
@@ -346,7 +344,9 @@ class ChatViewModel(
         draftMeta.value = meta.copy(sending = true)
         scope.launch {
             try {
-                val id = chats.createChat(modelId, d.promptSnapshot(clock()), d.params)
+                // Trace seulement: la source de vérité des paramètres est le réglage global, lu à chaque requête.
+                val global = localParams.value ?: settings.settings.first().defaultParams
+                val id = chats.createChat(modelId, d.promptSnapshot(clock()), global)
                 engine.send(id, text)
                 eventChannel.send(ChatUiEvent.OpenChat(id, fromDraft = true))
             } catch (e: CancellationException) {
@@ -501,34 +501,38 @@ class ChatViewModel(
     private var pendingParams: GenParams? = null
     private var saveJob: Job? = null
 
-    /** Brouillon: en mémoire. Chat existant: appliqué à l'affichage tout de suite, enregistré après [paramsDebounceMs]. */
+    /**
+     * Paramètres de génération GLOBAUX (brouillon comme chat existant): appliqués à l'affichage tout de suite,
+     * enregistrés dans les réglages après [paramsDebounceMs]. Changer de modèle n'y touche jamais.
+     */
     fun setParams(params: GenParams) {
-        val id = chatId
-        if (id == null) {
-            draft.update { it.copy(params = params) }
-            return
-        }
         localParams.value = params
         pendingParams = params
         saveJob?.cancel()
         saveJob = scope.launch {
             delay(paramsDebounceMs)
-            persistParams(id)
+            persistParams()
         }
     }
 
-    /** Enregistre tout de suite les paramètres en attente (fermeture de la feuille). */
+    /** Enregistre tout de suite les paramètres en attente (fermeture de la feuille, sortie d'écran). */
     fun flushParams() {
-        val id = chatId ?: return
         if (pendingParams == null) return
         saveJob?.cancel()
-        scope.launch { persistParams(id) }
+        scope.launch { persistParams() }
     }
 
-    private suspend fun persistParams(id: String) {
+    private suspend fun persistParams() {
         val p = pendingParams ?: return
         pendingParams = null
-        runCatchingNotice { chats.updateChatSettings(id, params = p) }
+        try {
+            settings.setDefaultParams(p)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (localParams.value == p) localParams.value = null
+            notice("Erreur : ${e.message ?: e::class.java.simpleName}")
+        }
     }
 
     suspend fun refreshModels(): Result<Unit> = models.refresh()

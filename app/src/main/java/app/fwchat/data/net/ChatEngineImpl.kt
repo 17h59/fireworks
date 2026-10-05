@@ -1,6 +1,7 @@
 package app.fwchat.data.net
 
 import app.fwchat.domain.ApiMessage
+import app.fwchat.domain.AppDefaults
 import app.fwchat.domain.Chat
 import app.fwchat.domain.ChatEngine
 import app.fwchat.domain.ChatRepository
@@ -8,6 +9,7 @@ import app.fwchat.domain.ChatRequest
 import app.fwchat.domain.EngineEvent
 import app.fwchat.domain.FireworksApi
 import app.fwchat.domain.FireworksException
+import app.fwchat.domain.GenParams
 import app.fwchat.domain.Message
 import app.fwchat.domain.MessageStatus
 import app.fwchat.domain.ModelRepository
@@ -30,6 +32,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -207,7 +210,8 @@ class ChatEngineImpl(
 
     // ------------------------------------------------------------------ requête
 
-    internal fun buildRequest(chat: Chat, history: List<Message>): ChatRequest {
+    /** Paramètres GLOBAUX (Réglages) passés par l'appelant; `chat.params` n'est plus la source de vérité. */
+    internal fun buildRequest(chat: Chat, history: List<Message>, globalParams: GenParams): ChatRequest {
         val messages = ArrayList<ApiMessage>()
         chat.systemPromptText?.takeIf { it.isNotBlank() }?.let { messages += ApiMessage("system", it) }
         history.forEach { m ->
@@ -215,7 +219,7 @@ class ChatEngineImpl(
                 messages += ApiMessage(if (m.role == Role.USER) "user" else "assistant", m.content)
             }
         }
-        return ChatRequest(model = chat.modelId, messages = messages, params = chat.params)
+        return ChatRequest(model = chat.modelId, messages = messages, params = GenParamsCompat.forModel(globalParams, chat.modelId))
     }
 
     // ------------------------------------------------------------------ streaming
@@ -257,7 +261,14 @@ class ChatEngineImpl(
             currentCoroutineContext().ensureActive()
             val key = settings.apiKey()?.takeIf { it.isNotBlank() }
                 ?: throw FireworksException.Unauthorized("Clé API manquante")
-            val request = buildRequest(chat, history)
+            val globalParams = try {
+                settings.settings.first().defaultParams
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppDefaults.GEN_PARAMS
+            }
+            val request = buildRequest(chat, history, globalParams)
             coroutineScope {
                 val ticker = launch {
                     var sinceCheckpoint = 0L

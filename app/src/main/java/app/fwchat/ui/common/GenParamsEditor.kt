@@ -100,6 +100,13 @@ fun GenParamsEditor(
                     )
                 }
             }
+            if (GenParamsLogic.noReasoningIgnored(params, modelId)) {
+                Text(
+                    "« Aucun » : ignoré pour ce modèle.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 "Les modèles à raisonnement consomment des tokens max pour réfléchir.",
                 style = MaterialTheme.typography.bodySmall,
@@ -186,7 +193,7 @@ fun GenParamsSheet(
     modelId: String?,
     onDismiss: () -> Unit,
     /** Sous-titre sous le titre de la feuille (null = aucun). */
-    subtitle: String? = "Pour cette conversation",
+    subtitle: String? = "Appliqué à toutes tes conversations",
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,

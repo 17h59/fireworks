@@ -340,9 +340,9 @@ fun SettingsScreen(
             SectionDivider()
 
             // ------------------------------------------------------------ paramètres de génération
-            Section("Paramètres de génération par défaut") {
+            Section("Paramètres de génération") {
                 Text(
-                    "Appliqués aux nouveaux chats. Chaque chat garde ses propres réglages.",
+                    "Appliqués à toutes tes conversations.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
