@@ -20,11 +20,16 @@ fun maskApiKey(key: String?): String? {
     return if (k.length >= 12) "••••" + k.takeLast(4) else "••••"
 }
 
-/** Nom du prompt par défaut: « Aucun prompt système », son nom, ou un repli si l'id ne correspond plus à rien. */
+/** Nom du prompt par défaut: « Aucun prompt système », ou son nom (un id qui ne correspond plus à rien vaut « aucun »). */
 fun promptLabel(defaultId: String?, prompts: List<SystemPrompt>): String {
     if (defaultId == null) return NO_SYSTEM_PROMPT_LABEL
-    return prompts.firstOrNull { it.id == defaultId }?.name?.ifBlank { "Sans nom" } ?: "Prompt introuvable"
+    val prompt = prompts.firstOrNull { it.id == defaultId } ?: return NO_SYSTEM_PROMPT_LABEL
+    return prompt.name.ifBlank { "Sans nom" }
 }
+
+/** true si le prompt par défaut pointe vers un prompt qui n'existe plus (à remettre à « aucun »). */
+fun isStaleDefaultPrompt(defaultId: String?, prompts: List<SystemPrompt>): Boolean =
+    defaultId != null && prompts.none { it.id == defaultId }
 
 /** Ligne de résumé du modèle par défaut: nom court + contexte (ex. « glm-5p3-flash · contexte 128k »). */
 fun modelSummary(modelId: String?, models: List<ModelInfo>): String {

@@ -389,11 +389,35 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun `un prompt par defaut supprime est remis a aucun`() = runTest(dispatcher) {
+        val e = env(defaultPrompt = "p1", prompts = listOf(systemPrompt("p1", "Coach")))
+        advanceUntilIdle()
+        assertEquals("p1", e.settings.current.defaultSystemPromptId)
+        assertEquals("p1", e.vm.state.value.defaultPromptId)
+
+        e.prompts.delete("p1")
+        advanceUntilIdle()
+        assertNull(e.settings.current.defaultSystemPromptId)
+        assertNull(e.vm.state.value.defaultPromptId)
+    }
+
+    @Test
+    fun `un defaut orphelin au demarrage est remis a aucun`() = runTest(dispatcher) {
+        val e = env(defaultPrompt = "fantome", prompts = listOf(systemPrompt("p1")))
+        advanceUntilIdle()
+        assertNull(e.settings.current.defaultSystemPromptId)
+        assertNull(e.vm.state.value.defaultPromptId)
+    }
+
+    @Test
     fun `promptLabel gere aucun prompt nom et prompt supprime`() {
         val prompts = listOf(systemPrompt("p1", "Coach"))
         assertEquals(NO_SYSTEM_PROMPT_LABEL, promptLabel(null, prompts))
         assertEquals("Coach", promptLabel("p1", prompts))
-        assertEquals("Prompt introuvable", promptLabel("disparu", prompts))
+        assertEquals(NO_SYSTEM_PROMPT_LABEL, promptLabel("disparu", prompts))
+        assertTrue(isStaleDefaultPrompt("disparu", prompts))
+        assertFalse(isStaleDefaultPrompt("p1", prompts))
+        assertFalse(isStaleDefaultPrompt(null, prompts))
     }
 
     @Test

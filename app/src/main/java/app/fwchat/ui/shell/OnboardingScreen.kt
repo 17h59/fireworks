@@ -1,6 +1,7 @@
 package app.fwchat.ui.shell
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -14,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
@@ -46,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.fwchat.R
+import app.fwchat.ui.theme.FwMark
 import kotlinx.coroutines.launch
 
 @Composable
@@ -70,89 +73,100 @@ fun OnboardingScreen(
         modifier = modifier.fillMaxSize(),
         contentWindowInsets = WindowInsets.safeDrawing,
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp, vertical = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
-        ) {
-            Text(
-                text = stringResource(R.string.onboarding_title),
-                style = MaterialTheme.typography.headlineMedium,
-            )
-            Text(
-                text = stringResource(R.string.onboarding_body),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedTextField(
-                value = key,
-                onValueChange = { key = it; viewModel.clearError() },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(stringResource(R.string.onboarding_key_label)) },
-                singleLine = true,
-                enabled = !state.loading,
-                isError = state.error != null,
-                visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Password,
-                    autoCorrectEnabled = false,
-                    imeAction = ImeAction.Done,
-                ),
-                keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                    onDone = { viewModel.submit(key) },
-                ),
-                trailingIcon = {
-                    IconButton(onClick = { visible = !visible }) {
-                        Icon(
-                            imageVector = if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                            contentDescription = stringResource(
-                                if (visible) R.string.onboarding_hide else R.string.onboarding_show,
-                            ),
-                        )
-                    }
-                },
-                supportingText = state.error?.let { err -> { Text(stringResource(errorText(err))) } },
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+        // verticalScroll donne une hauteur illimitée au contenu: on impose au moins la hauteur disponible
+        // pour centrer verticalement quand il y a la place, tout en restant défilant avec le clavier.
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(padding)) {
+            val minHeight = maxHeight
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = minHeight)
+                    .padding(horizontal = 24.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
             ) {
-                TextButton(
+                FwMark(size = 72.dp)
+                Text(
+                    text = stringResource(R.string.onboarding_title),
+                    style = MaterialTheme.typography.headlineMedium,
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Bullet(stringResource(R.string.onboarding_point_local))
+                    Bullet(stringResource(R.string.onboarding_point_key))
+                    Bullet(stringResource(R.string.onboarding_point_account))
+                }
+                Text(
+                    text = stringResource(R.string.onboarding_body),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = key,
+                    onValueChange = { key = it; viewModel.clearError() },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.onboarding_key_label)) },
+                    singleLine = true,
                     enabled = !state.loading,
-                    onClick = {
-                        scope.launch {
-                            val text = clipboard.getClipEntry()?.clipData?.takeIf { it.itemCount > 0 }
-                                ?.getItemAt(0)?.text?.toString()
-                            if (!text.isNullOrBlank()) {
-                                key = text.trim()
-                                viewModel.clearError()
-                            }
+                    isError = state.error != null,
+                    visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onDone = { viewModel.submit(key) },
+                    ),
+                    trailingIcon = {
+                        IconButton(onClick = { visible = !visible }) {
+                            Icon(
+                                imageVector = if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = stringResource(
+                                    if (visible) R.string.onboarding_hide else R.string.onboarding_show,
+                                ),
+                            )
                         }
                     },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) { Text(stringResource(R.string.onboarding_paste)) }
-                TextButton(
-                    onClick = { uriHandler.openUri("https://fireworks.ai") },
-                    modifier = Modifier.heightIn(min = 48.dp),
-                ) { Text(stringResource(R.string.onboarding_open_site)) }
-            }
-            Button(
-                onClick = { viewModel.submit(key) },
-                enabled = !state.loading && key.isNotBlank(),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-            ) {
-                if (state.loading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                    )
-                } else {
-                    Text(stringResource(R.string.onboarding_validate))
+                    supportingText = state.error?.let { err -> { Text(stringResource(errorText(err))) } },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        enabled = !state.loading,
+                        onClick = {
+                            scope.launch {
+                                val text = clipboard.getClipEntry()?.clipData?.takeIf { it.itemCount > 0 }
+                                    ?.getItemAt(0)?.text?.toString()
+                                if (!text.isNullOrBlank()) {
+                                    key = text.trim()
+                                    viewModel.clearError()
+                                }
+                            }
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.onboarding_paste)) }
+                    TextButton(
+                        onClick = { uriHandler.openUri("https://fireworks.ai") },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) { Text(stringResource(R.string.onboarding_open_site)) }
+                }
+                Button(
+                    onClick = { viewModel.submit(key) },
+                    enabled = !state.loading && key.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                ) {
+                    if (state.loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    } else {
+                        Text(stringResource(R.string.onboarding_validate))
+                    }
                 }
             }
         }
@@ -164,4 +178,22 @@ private fun errorText(e: OnboardingError): Int = when (e) {
     OnboardingError.UNAUTHORIZED -> R.string.onboarding_error_unauthorized
     OnboardingError.NETWORK -> R.string.onboarding_error_network
     OnboardingError.OTHER -> R.string.onboarding_error_other
+}
+
+/** Puce de réassurance: coche + texte court. */
+@Composable
+private fun Bullet(text: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 32.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.Check,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+        )
+        Text(text, style = MaterialTheme.typography.bodyLarge)
+    }
 }

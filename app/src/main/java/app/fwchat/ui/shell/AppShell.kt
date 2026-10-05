@@ -1,6 +1,11 @@
 package app.fwchat.ui.shell
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalDrawerSheet
@@ -12,10 +17,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavHostController
@@ -30,6 +37,8 @@ import app.fwchat.ui.chat.ChatScreen
 import app.fwchat.ui.prompts.screens.PromptEditorScreen
 import app.fwchat.ui.prompts.screens.PromptListScreen
 import app.fwchat.ui.settings.SettingsScreen
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -64,8 +73,23 @@ private fun AppShell(container: AppContainer, startRoute: String) {
     val isChatRoute = route == Routes.CHAT_NEW || route == Routes.CHAT
     val currentChatId = if (route == Routes.CHAT) backStackEntry?.arguments?.getString(Routes.CHAT_ARG) else null
 
+    // Clé perdue en cours d'usage (ex. clé Keystore illisible): retour à l'onboarding avec une pile propre.
+    val hasApiKey by remember(container) {
+        container.settings.settings.map { it.hasApiKey }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = true)
+    LaunchedEffect(hasApiKey, route) {
+        if (shouldReturnToOnboarding(hasApiKey, route)) navController.navigateToOnboarding()
+    }
+
     fun closeDrawer() {
         scope.launch { drawerState.close() }
+    }
+
+    // La recherche du tiroir ne doit pas survivre à l'ouverture d'un chat.
+    fun startNewChat() {
+        closeDrawer()
+        drawerViewModel.setQuery("")
+        if (route != Routes.CHAT_NEW) navController.navigateToChat(Routes.CHAT_NEW)
     }
 
     fun openDrawer() {
@@ -88,16 +112,15 @@ private fun AppShell(container: AppContainer, startRoute: String) {
                 DrawerContent(
                     viewModel = drawerViewModel,
                     currentChatId = currentChatId,
-                    onNewChat = {
-                        closeDrawer()
-                        if (route != Routes.CHAT_NEW) navController.navigateToChat(Routes.CHAT_NEW)
-                    },
+                    onNewChat = ::startNewChat,
                     onOpenChat = { id ->
                         closeDrawer()
+                        drawerViewModel.setQuery("")
                         if (id != currentChatId) navController.navigateToChat(Routes.chat(id))
                     },
                     onCurrentChatDeleted = {
                         closeDrawer()
+                        drawerViewModel.setQuery("")
                         navController.navigateToChat(Routes.CHAT_NEW)
                     },
                     onOpenPrompts = {
@@ -116,29 +139,48 @@ private fun AppShell(container: AppContainer, startRoute: String) {
             navController = navController,
             startDestination = startRoute,
             modifier = Modifier.fillMaxSize(),
+            // Fondu court par défaut (le défaut de ~700 ms se voyait au 1er message); aucun sur les chats.
+            enterTransition = { fadeIn(tween(ScreenFadeMillis)) },
+            exitTransition = { fadeOut(tween(ScreenFadeMillis)) },
+            popEnterTransition = { fadeIn(tween(ScreenFadeMillis)) },
+            popExitTransition = { fadeOut(tween(ScreenFadeMillis)) },
         ) {
             composable(Routes.ONBOARDING) {
                 OnboardingScreen(onDone = { navController.navigateToChat(Routes.CHAT_NEW) })
             }
-            composable(Routes.CHAT_NEW) {
+            composable(
+                route = Routes.CHAT_NEW,
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None },
+            ) {
                 ChatScreen(
                     container = container,
                     chatId = null,
                     onOpenDrawer = ::openDrawer,
-                    onChatCreated = { id -> navController.replaceWithChat(id) },
+                    onChatCreated = { id -> navController.openCreatedChat(id) },
                     onOpenSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
+                    onNewChat = ::startNewChat,
+                    onOpenPrompts = { navController.navigate(Routes.PROMPTS) { launchSingleTop = true } },
                 )
             }
             composable(
                 route = Routes.CHAT,
                 arguments = listOf(navArgument(Routes.CHAT_ARG) { type = NavType.StringType }),
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None },
             ) { entry: NavBackStackEntry ->
                 ChatScreen(
                     container = container,
                     chatId = entry.arguments?.getString(Routes.CHAT_ARG),
                     onOpenDrawer = ::openDrawer,
-                    onChatCreated = { id -> navController.replaceWithChat(id) },
+                    onChatCreated = { id -> navController.openCreatedChat(id) },
                     onOpenSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
+                    onNewChat = ::startNewChat,
+                    onOpenPrompts = { navController.navigate(Routes.PROMPTS) { launchSingleTop = true } },
                 )
             }
             composable(Routes.SETTINGS) {
@@ -192,14 +234,32 @@ private fun NavHostController.navigateToOnboarding() {
     }
 }
 
-/** Le brouillon `chat/new` devient `chat/{id}` au premier envoi, sans empiler. */
-private fun NavHostController.replaceWithChat(chatId: String) {
-    navigate(Routes.chat(chatId)) {
-        popUpTo(Routes.CHAT_NEW) { inclusive = true }
-        launchSingleTop = true
+/**
+ * Appelé quand un chat vient d'être créé: au 1er envoi d'un brouillon, `chat/new` devient `chat/{id}` sans
+ * empiler (le retour système ne revient pas au brouillon vide). Après un fork depuis un chat existant, le
+ * nouveau chat est EMPILÉ au-dessus du chat d'origine (le retour y ramène).
+ */
+private fun NavHostController.openCreatedChat(chatId: String) {
+    if (currentBackStackEntry?.destination?.route == Routes.CHAT_NEW) {
+        navigate(Routes.chat(chatId)) {
+            popUpTo(Routes.CHAT_NEW) { inclusive = true }
+            launchSingleTop = true
+        }
+    } else {
+        navigate(Routes.chat(chatId))
     }
 }
 
 private fun NavHostController.popBackStackSafely() {
     if (previousBackStackEntry != null) popBackStack()
 }
+
+/** Durée du fondu entre écrans hors chat. */
+private const val ScreenFadeMillis = 120
+
+/**
+ * Une clé API qui disparaît en cours d'usage (route connue, hors onboarding) renvoie à l'onboarding.
+ * Sur l'onboarding lui-même, la clé est absente par définition: rien à faire.
+ */
+internal fun shouldReturnToOnboarding(hasApiKey: Boolean, route: String?): Boolean =
+    !hasApiKey && route != null && route != Routes.ONBOARDING

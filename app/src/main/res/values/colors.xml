@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="window_background">#FFFBFB</color>
+    <!-- Surface de la marque (thème clair): identique à FwLightColors.background. -->
+    <color name="window_background">#FFFBFE</color>
     <color name="ic_launcher_background">#1B1530</color>
 </resources>

@@ -1,5 +1,6 @@
 package app.fwchat.ui.prompts.screens
 
+import androidx.lifecycle.SavedStateHandle
 import app.cash.turbine.test
 import app.fwchat.domain.PromptFamily
 import app.fwchat.ui.FakePromptRepo
@@ -110,7 +111,8 @@ class PromptViewModelsTest {
         settings: FakeSettingsRepo = FakeSettingsRepo(),
         id: String = Routes.PROMPT_NEW_ID,
         template: String? = null,
-    ) = PromptEditorViewModel(prompts, settings, id, template)
+        handle: SavedStateHandle = SavedStateHandle(),
+    ) = PromptEditorViewModel(prompts, settings, id, template, handle)
 
     @Test
     fun `enregistrer exige nom et texte`() = runTest(dispatcher) {
@@ -192,5 +194,66 @@ class PromptViewModelsTest {
         assertTrue(done)
         assertTrue(prompts.items.value.isEmpty())
         assertNull(settings.current.defaultSystemPromptId)
+    }
+
+    @Test
+    fun `double appui sur enregistrer ne cree qu un prompt`() = runTest(dispatcher) {
+        val prompts = FakePromptRepo()
+        val vm = editorVm(prompts)
+        vm.onNameChange("Nom")
+        vm.onTextChange("Tu es utile.")
+        var closed = 0
+        vm.save { closed++ }
+        assertTrue(vm.saving)
+        vm.save { closed++ }
+        advanceUntilIdle()
+        assertEquals(1, prompts.items.value.size)
+        assertEquals(1, closed)
+        assertFalse(vm.saving)
+    }
+
+    @Test
+    fun `un nouvel appui apres enregistrement met a jour le meme prompt`() = runTest(dispatcher) {
+        val prompts = FakePromptRepo()
+        val vm = editorVm(prompts)
+        vm.onNameChange("Nom")
+        vm.onTextChange("v1")
+        vm.save {}
+        advanceUntilIdle()
+        vm.onTextChange("v2")
+        vm.save {}
+        advanceUntilIdle()
+        assertEquals("v2", prompts.items.value.single().text)
+    }
+
+    @Test
+    fun `le brouillon survit a la mort du processus`() = runTest(dispatcher) {
+        val handle = SavedStateHandle()
+        val first = editorVm(handle = handle)
+        first.onNameChange("Mon prompt")
+        first.onTextChange("Tu es un coach.")
+        first.onFamilyChange(PromptFamily.KIMI)
+
+        // Nouveau ViewModel avec le même état sauvegardé.
+        val restored = editorVm(handle = handle)
+        assertEquals("Mon prompt", restored.name)
+        assertEquals("Tu es un coach.", restored.text)
+        assertEquals(PromptFamily.KIMI, restored.family)
+        assertTrue(restored.dirty)
+    }
+
+    @Test
+    fun `le brouillon restaure l emporte sur le prompt enregistre`() = runTest(dispatcher) {
+        val prompts = FakePromptRepo(listOf(systemPrompt("p1", name = "Ancien", text = "avant")))
+        val handle = SavedStateHandle()
+        val first = editorVm(prompts, id = "p1", handle = handle)
+        advanceUntilIdle()
+        first.onTextChange("brouillon non enregistre")
+
+        val restored = editorVm(prompts, id = "p1", handle = handle)
+        advanceUntilIdle()
+        assertEquals("Ancien", restored.name)
+        assertEquals("brouillon non enregistre", restored.text)
+        assertTrue(restored.dirty)
     }
 }

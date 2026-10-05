@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -77,7 +78,7 @@ import java.time.LocalDate
  * Écran de réglages: une seule page défilante, découpée en sections (clé API, modèle, prompt système,
  * paramètres de génération, sauvegarde, à propos). On n'en sort que vers la bibliothèque de prompts.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     container: AppContainer,
@@ -223,10 +224,10 @@ fun SettingsScreen(
                         },
                         supportingText = state.keyError?.let { err -> { Text(err) } },
                     )
-                    Row(
+                    FlowRow(
                         Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                        verticalArrangement = Arrangement.Center,
                     ) {
                         TextButton(
                             enabled = !state.validatingKey,
@@ -252,7 +253,6 @@ fun SettingsScreen(
                                 viewModel.clearKeyError()
                             },
                         ) { Text("Annuler") }
-                        Spacer(Modifier.weight(1f))
                         Button(
                             onClick = { viewModel.replaceKey(newKey) },
                             enabled = !state.validatingKey && newKey.isNotBlank(),
@@ -270,7 +270,7 @@ fun SettingsScreen(
                         }
                     }
                 } else {
-                    Row(
+                    FlowRow(
                         Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
@@ -377,9 +377,9 @@ fun SettingsScreen(
                         modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
-                Row(
+                FlowRow(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     OutlinedButton(
                         enabled = !busy,

@@ -236,7 +236,7 @@ private fun PromptCard(
                     contentDescription = stringResource(
                         if (isDefault) R.string.prompts_default_set else R.string.prompts_default_unset,
                     ),
-                    tint = if (isDefault) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = if (isDefault) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             if (onDelete != null) {

@@ -35,6 +35,8 @@ class PromptEditorViewModel(
     private val settings: SettingsRepository,
     private val promptId: String,
     private val initialTemplateId: String?,
+    /** Brouillon (nom, texte, famille): survit à la mort du processus tant que l'écran est dans la pile. */
+    private val handle: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
 
     val isNew: Boolean = promptId == Routes.PROMPT_NEW_ID
@@ -57,15 +59,31 @@ class PromptEditorViewModel(
     private var baseText = ""
     private var baseFamily: PromptFamily? = null
 
+    /** true pendant l'enregistrement: un double appui sur « Enregistrer » ne crée qu'un seul prompt. */
+    var saving by mutableStateOf(false)
+        private set
+
     val canSave: Boolean get() = name.isNotBlank() && text.isNotBlank()
     val dirty: Boolean get() = name != baseName || text != baseText || family != baseFamily
 
     init {
+        // Brouillon restauré (processus tué): chaque champ saisi l'emporte sur le modèle ou la version enregistrée.
+        val draftName = handle.get<String>(KEY_NAME)
+        val draftText = handle.get<String>(KEY_TEXT)
+        val draftFamily = handle.contains(KEY_FAMILY)
+        val hasDraft = draftName != null || draftText != null || draftFamily
+        fun restoredFamily(): PromptFamily? =
+            handle.get<String>(KEY_FAMILY)?.let { f -> PromptFamily.entries.firstOrNull { it.name == f } }.normalized()
+        if (draftName != null) name = draftName
+        if (draftText != null) text = draftText
+        if (draftFamily) family = restoredFamily()
         if (isNew) {
-            PromptTemplates.all.firstOrNull { it.id == initialTemplateId }?.let { t ->
-                name = t.name
-                text = t.text
-                family = t.family.normalized()
+            if (!hasDraft) {
+                PromptTemplates.all.firstOrNull { it.id == initialTemplateId }?.let { t ->
+                    name = t.name
+                    text = t.text
+                    family = t.family.normalized()
+                }
             }
         } else {
             viewModelScope.launch {
@@ -74,26 +92,29 @@ class PromptEditorViewModel(
                     notFound = true
                 } else {
                     original = p
-                    name = p.name; text = p.text; family = p.family.normalized()
-                    baseName = name; baseText = text; baseFamily = family
+                    baseName = p.name; baseText = p.text; baseFamily = p.family.normalized()
+                    if (draftName == null) name = baseName
+                    if (draftText == null) text = baseText
+                    if (!draftFamily) family = baseFamily
                 }
                 loaded = true
             }
         }
     }
 
-    fun onNameChange(v: String) { name = v }
-    fun onTextChange(v: String) { text = v }
-    fun onFamilyChange(f: PromptFamily?) { family = f }
+    fun onNameChange(v: String) { name = v; handle[KEY_NAME] = v }
+    fun onTextChange(v: String) { text = v; handle[KEY_TEXT] = v }
+    fun onFamilyChange(f: PromptFamily?) { family = f; handle[KEY_FAMILY] = f?.name }
 
     /** Remplit le champ avec un modèle. Si le nom est vide, reprend aussi celui du modèle. */
     fun applyTemplate(t: PromptTemplate) {
-        text = t.text
-        if (name.isBlank()) name = t.name
+        onTextChange(t.text)
+        if (name.isBlank()) onNameChange(t.name)
     }
 
     fun save(onSaved: () -> Unit) {
-        if (!canSave) return
+        if (!canSave || saving) return
+        saving = true
         val now = System.currentTimeMillis()
         val draft = SystemPrompt(
             id = original?.id ?: "",
@@ -104,9 +125,13 @@ class PromptEditorViewModel(
             updatedAt = now,
         )
         viewModelScope.launch {
-            val id = prompts.upsert(draft)
-            original = draft.copy(id = id)
-            baseName = name; baseText = text; baseFamily = family
+            try {
+                val id = prompts.upsert(draft)
+                original = draft.copy(id = id)
+                baseName = name; baseText = text; baseFamily = family
+            } finally {
+                saving = false
+            }
             onSaved()
         }
     }
@@ -122,6 +147,10 @@ class PromptEditorViewModel(
     }
 
     companion object {
+        private const val KEY_NAME = "draft_name"
+        private const val KEY_TEXT = "draft_text"
+        private const val KEY_FAMILY = "draft_family"
+
         val Factory = viewModelFactory {
             initializer {
                 val handle: SavedStateHandle = createSavedStateHandle()
@@ -131,6 +160,7 @@ class PromptEditorViewModel(
                     c.settings,
                     handle.get<String>(Routes.PROMPT_ARG) ?: Routes.PROMPT_NEW_ID,
                     handle.get<String>(Routes.PROMPT_TEMPLATE_ARG),
+                    handle,
                 )
             }
         }

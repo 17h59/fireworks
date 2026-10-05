@@ -47,7 +47,8 @@ class AppContainer(context: Context) {
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        // Streaming: un modèle qui réfléchit longtemps peut ne rien émettre pendant plusieurs minutes.
+        .readTimeout(180, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 

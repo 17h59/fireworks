@@ -21,7 +21,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -66,7 +68,7 @@ sealed interface SettingsEvent {
 class SettingsViewModel(
     private val settings: SettingsRepository,
     private val models: ModelRepository,
-    prompts: SystemPromptRepository,
+    private val prompts: SystemPromptRepository,
     private val chats: ChatRepository,
     private val appScope: CoroutineScope,
 ) : ViewModel() {
@@ -99,7 +101,8 @@ class SettingsViewModel(
             defaultModelId = s.defaultModelId,
             models = ms,
             refreshingModels = l.refreshingModels,
-            defaultPromptId = s.defaultSystemPromptId,
+            // Un défaut dont le prompt a disparu vaut « aucun » (remis à zéro en base par l'init).
+            defaultPromptId = s.defaultSystemPromptId?.takeUnless { isStaleDefaultPrompt(it, ps) },
             prompts = ps,
             params = l.params,
             backupOp = l.backupOp,
@@ -113,6 +116,22 @@ class SettingsViewModel(
             local.update { if (it.params == null) it.copy(params = initial) else it }
         }
         viewModelScope.launch { refreshKeyHint() }
+        // Prompt par défaut supprimé (depuis la bibliothèque ou par un import): retour à « Aucun prompt système ».
+        viewModelScope.launch {
+            combine(settings.settings.map { it.defaultSystemPromptId }.distinctUntilChanged(), prompts.observeAll()) { id, ps ->
+                isStaleDefaultPrompt(id, ps)
+            }.collect { stale ->
+                if (stale) {
+                    try {
+                        settings.setDefaultSystemPrompt(null)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Non bloquant: l'affichage retombe déjà sur « aucun ».
+                    }
+                }
+            }
+        }
     }
 
     private suspend fun refreshKeyHint() {

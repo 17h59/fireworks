@@ -92,7 +92,7 @@ fun PromptEditorScreen(
                 },
                 actions = {
                     TextButton(
-                        enabled = viewModel.canSave,
+                        enabled = viewModel.canSave && !viewModel.saving,
                         onClick = { viewModel.save(onSaved = onClose) },
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) { Text(stringResource(R.string.action_save)) }
