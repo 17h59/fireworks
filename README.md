@@ -1,46 +1,80 @@
 # FW Chat
 
-Application de chat Android 100 % locale pour l'API [Fireworks AI](https://fireworks.ai)
-(Kotlin + Jetpack Compose + Material 3). Les conversations restent sur le téléphone
-(Room, aucun cloud hors les appels d'inférence Fireworks). Permissions : `INTERNET`, plus un service
-de premier plan + notifications pour que les réponses longues continuent en arrière-plan.
-Cible : Android 15 (minSdk 34).
+Une application Android de chat conçue **exclusivement pour [Fireworks AI](https://fireworks.ai)**.
+Simple, rapide, et **100 % locale** : tes conversations, tes prompts et ta clé API restent sur ton
+téléphone. Aucun serveur intermédiaire, aucun compte : seules les requêtes d'inférence partent vers Fireworks.
 
-## Fonctionnalités (v1)
+> Kotlin · Jetpack Compose · Material 3 · Room · Android 14+ (testé sur Android 15)
 
-- Chats sauvegardés, renommables, recherchables par nom ; fork depuis n'importe quel message.
-- Branches de conversation (édition d'un message → `‹ 2/3 ›`), régénération, édition en place.
-- Modèles Fireworks utilisables directement (serverless), liste rechargée au démarrage et sur erreur ;
-  modèle par défaut.
-- Prompts système illimités, un par défaut, choisis au début d'un chat puis figés (irréversible).
-- Thinking en streaming dans un bloc repliable, markdown transparent rapide, auto-scroll intelligent.
-- Paramètres de génération (température, tokens max, stop, top-p/k, pénalités, raisonnement…) depuis le chat.
-- Sauvegarde / restauration JSON des chats et prompts (Réglages).
+## Pourquoi
 
-## Premier lancement
+Le playground de Fireworks est limité et peu confortable. FW Chat donne accès à **tous les modèles
+utilisables directement** (serverless), avec un vrai confort de chat : historique, branches, prompts système,
+paramètres de génération, raisonnement visible, coûts.
 
-Installer l'APK, coller sa clé API Fireworks (stockée chiffrée via Android Keystore), valider.
-Guide de rédaction des prompts système par famille de modèles : `docs/GUIDE_PROMPTS_SYSTEME.md`.
+## Fonctionnalités
 
-## Builder
+**Conversations**
+- Chats sauvegardés, **renommables**, **recherchables par nom**, repris là où tu les as laissés.
+- **Branches** : modifie un message et renvoie-le, l'IA régénère et une branche est créée (`‹ 2/3 ›` pour naviguer).
+  Même chose en régénérant une réponse. « Enregistrer » modifie sur place, sans régénérer ni brancher.
+- **Fork** depuis n'importe quel message (« Nouveau chat à partir d'ici ») et duplication d'un chat.
+- Actions sous chaque message : copier, modifier, régénérer, nouveau chat à partir d'ici, supprimer.
+- Sauvegarde et restauration JSON de tout (chats + prompts).
 
-Prérequis : JDK 21 et Android SDK (plateforme 37.0, build-tools 36.0.0).
+**Modèles et prompts**
+- Liste des modèles rechargée au démarrage et à chaque erreur liée aux modèles ; **modèle par défaut** pour chaque nouveau chat.
+- **Prompts système illimités**, un par défaut ; choisis au début d'une discussion puis **figés** : un chat
+  garde pour toujours le prompt avec lequel il a démarré (ou l'absence de prompt).
+- Un [guide de rédaction](docs/GUIDE_PROMPTS_SYSTEME.md) par famille de modèles (GLM, DeepSeek, Qwen, Kimi,
+  MiniMax, gpt-oss, Nemotron) et des modèles de départ.
 
-```bash
-export ANDROID_HOME=/chemin/vers/android-sdk   # ou sdk.dir dans local.properties
-./gradlew testDebugUnitTest assembleRelease
-```
+**Lecture**
+- Réponses **en streaming**, markdown rendu de façon transparente (aucune boîte « markdown »), très gros textes fluides.
+- **Raisonnement** (thinking) streamé dans un bloc repliable : aperçu fixe des 5 premières lignes, « Tout afficher »
+  pour tout lire, re-toucher le ☰ pour replier.
+- Auto-scroll intelligent : suit le texte quand tu es en bas, te laisse libre dès que tu remontes.
+- Interface edge-to-edge qui respecte la barre de navigation (3 boutons ou gestes) et le clavier.
 
-L'APK est produit dans `app/build/outputs/apk/release/app-release.apk`. Il est signé avec
-le keystore de debug versionné (`app/debug.keystore`) : aucun secret n'est nécessaire et
-chaque build s'installe par-dessus le précédent.
+**Réglages Fireworks**
+- Température, tokens max, mots d'arrêt, top-p/top-k/min-p, pénalités, seed, effort de raisonnement,
+  accessibles **directement depuis le chat**. Ils sont **globaux** : identiques dans toutes les conversations,
+  quel que soit le modèle, et conservés quand tu fermes l'app.
 
-## Télécharger l'APK
+**Coûts**
+- Icônes **`$` à `$$$$`** à côté de chaque modèle (indicatif, table de prix datée).
+- Carte « Dépenses & crédit » dans les Réglages : dépenses du mois (lues sur ton compte) et crédit estimé
+  à partir du solde que tu saisis.
 
-La CI (GitHub Actions) construit chaque push. Sur la branche de travail et sur `main`,
-l'APK `fw-chat.apk` est publié dans la pre-release
-[`latest`](../../releases/tag/latest) : ouvre la page depuis le téléphone et télécharge-le.
+## Installer
+
+1. Depuis ton téléphone, ouvre la [release `latest`](https://github.com/17h59/fireworks/releases/tag/latest)
+   et télécharge `fw-chat.apk` (autorise l'installation depuis ce navigateur si Android le demande).
+2. Au premier lancement, colle ta **clé API Fireworks** (créée sur [fireworks.ai](https://fireworks.ai)). Elle est
+   stockée **chiffrée** via l'Android Keystore.
+3. Choisis un modèle, écris, c'est parti.
+
+L'APK est reconstruit automatiquement à chaque push sur `main` : la release `latest` est toujours à jour, et
+chaque version s'installe par-dessus la précédente sans perdre tes données.
 
 ## Documentation
 
-Voir le dossier `docs/`.
+| Document | Contenu |
+|---|---|
+| [Guide d'utilisation](docs/UTILISATION.md) | Prise en main, branches, prompts, réglages, coûts, sauvegarde |
+| [Guide des prompts système](docs/GUIDE_PROMPTS_SYSTEME.md) | Comment rédiger un prompt système selon la famille de modèle |
+| [Développement](docs/DEVELOPPEMENT.md) | Builder, tester, CI, conventions |
+| [Architecture](docs/ARCHITECTURE.md) | Couches, sémantique des branches, API Fireworks |
+| [API markdown](docs/MARKDOWN_API.md) | Le parseur incrémental et le rendu Compose |
+
+## Confidentialité et sécurité
+
+- Aucune télémétrie, aucun serveur tiers. Permissions : `INTERNET`, plus un service de premier plan et les
+  notifications pour que les réponses longues continuent quand tu changes d'application.
+- Clé API chiffrée (AES-256/GCM, Android Keystore), exclue des sauvegardes Android (`allowBackup=false`).
+- HTTPS uniquement. L'APK est signé avec une clé de debug **publique** versionnée dans le dépôt (pour que les mises à jour
+  s'installent sans configuration) : ne distribue pas cet APK comme un binaire « de confiance ».
+
+## Licence
+
+Voir [LICENSE](LICENSE).
