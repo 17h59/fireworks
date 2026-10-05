@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -66,6 +67,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.fwchat.AppContainer
 import app.fwchat.BuildConfig
+import app.fwchat.ui.common.CostBadge
 import app.fwchat.ui.common.GenParamsEditor
 import app.fwchat.ui.common.ModelPickerSheet
 import app.fwchat.ui.common.PromptPickerSheet
@@ -296,6 +298,7 @@ fun SettingsScreen(
                     title = modelSummary(state.defaultModelId, state.models),
                     subtitle = "Utilisé pour les nouveaux chats",
                     onClick = { showModels = true },
+                    costModelId = state.defaultModelId,
                 )
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -320,6 +323,13 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
+            }
+
+            SectionDivider()
+
+            // ------------------------------------------------------------ dépenses et crédit
+            Section("Dépenses & crédit") {
+                BillingCard(billing = container.billing, scope = container.appScope)
             }
 
             SectionDivider()
@@ -548,7 +558,7 @@ private fun SectionDivider() {
 }
 
 @Composable
-private fun ClickableRow(title: String, subtitle: String, onClick: () -> Unit) {
+private fun ClickableRow(title: String, subtitle: String, onClick: () -> Unit, costModelId: String? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -558,7 +568,13 @@ private fun ClickableRow(title: String, subtitle: String, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f, fill = false))
+                if (costModelId != null) {
+                    androidx.compose.foundation.layout.Spacer(Modifier.width(6.dp))
+                    CostBadge(costModelId)
+                }
+            }
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodyMedium,

@@ -6,7 +6,9 @@ import androidx.core.content.ContextCompat
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import app.fwchat.data.db.AppDatabase
 import app.fwchat.data.db.build
+import app.fwchat.data.net.BillingRepositoryImpl
 import app.fwchat.data.net.ChatEngineImpl
+import app.fwchat.data.net.FileBillingStore
 import app.fwchat.data.net.FileModelCache
 import app.fwchat.data.net.FireworksApiImpl
 import app.fwchat.data.net.ModelRepositoryImpl
@@ -14,6 +16,7 @@ import app.fwchat.data.prefs.KeystoreSecretStore
 import app.fwchat.data.prefs.SettingsRepositoryImpl
 import app.fwchat.data.repo.ChatRepositoryImpl
 import app.fwchat.data.repo.SystemPromptRepositoryImpl
+import app.fwchat.domain.BillingRepository
 import app.fwchat.domain.ChatEngine
 import app.fwchat.domain.ChatRepository
 import app.fwchat.domain.ModelRepository
@@ -26,6 +29,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -73,6 +77,14 @@ class AppContainer(context: Context) {
         settings = settings,
         cache = FileModelCache(File(filesDir, "models_cache.json")),
     )
+    /** Dépenses et crédit estimé (lecture seule, affichés uniquement dans les Réglages). */
+    val billing: BillingRepository = BillingRepositoryImpl(
+        client = httpClient,
+        baseUrl = "https://api.fireworks.ai",
+        settings = settings,
+        store = FileBillingStore(File(filesDir, "billing_cache.json")),
+    )
+
     /**
      * Terminé quand `recoverInterrupted()` a fini (succès ou échec): le moteur l'attend avant toute génération,
      * sinon la récupération pourrait marquer INTERRUPTED un message STREAMING légitime tout juste créé.
@@ -119,6 +131,7 @@ class AppContainer(context: Context) {
             }
         }
         keepProcessAliveWhileGenerating()
+        refreshBillingAfterGenerations()
     }
 
     /**
@@ -141,5 +154,40 @@ class AppContainer(context: Context) {
                     }
                 }
         }
+    }
+
+    /**
+     * À chaque fin de génération (un chat quitte l'ensemble), relit les dépenses après ~2 s (le serveur met un
+     * instant à comptabiliser), au plus une fois toutes les 5 s. Ne bloque jamais l'UI.
+     */
+    private fun refreshBillingAfterGenerations() {
+        appScope.launch {
+            var previous = emptySet<String>()
+            var lastRefreshAt = 0L
+            engine.generatingChats.collect { current ->
+                val finished = (previous - current).isNotEmpty()
+                previous = current
+                if (finished) {
+                    launch {
+                        delay(BILLING_REFRESH_DELAY_MS)
+                        val now = System.currentTimeMillis()
+                        if (now - lastRefreshAt < BILLING_MIN_INTERVAL_MS) return@launch
+                        lastRefreshAt = now
+                        try {
+                            if (!settings.apiKey().isNullOrBlank()) billing.refresh()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // Non bloquant.
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private companion object {
+        const val BILLING_REFRESH_DELAY_MS = 2_000L
+        const val BILLING_MIN_INTERVAL_MS = 5_000L
     }
 }

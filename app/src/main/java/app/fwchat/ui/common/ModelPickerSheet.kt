@@ -128,6 +128,7 @@ fun ModelPickerSheet(
                             vision = false,
                             selected = true,
                             onClick = { onSelect(selectedId) },
+                            costId = selectedId,
                         )
                     }
                 }
@@ -138,6 +139,7 @@ fun ModelPickerSheet(
                         vision = m.supportsImageInput,
                         selected = m.id == selectedId,
                         onClick = { onSelect(m.id) },
+                        costId = m.id,
                     )
                 }
                 if (filtered.isEmpty()) {
@@ -168,7 +170,14 @@ fun filterModels(models: List<ModelInfo>, query: String): List<ModelInfo> {
 }
 
 @Composable
-private fun ModelRow(title: String, subtitle: String, vision: Boolean, selected: Boolean, onClick: () -> Unit) {
+private fun ModelRow(
+    title: String,
+    subtitle: String,
+    vision: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    costId: String,
+) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -178,13 +187,18 @@ private fun ModelRow(title: String, subtitle: String, vision: Boolean, selected:
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                Spacer(Modifier.width(6.dp))
+                CostBadge(costId, showUnknown = true)
+            }
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodySmall,
