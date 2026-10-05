@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Surface de la marque (thème sombre): identique à FwDarkColors.background. -->
     <color name="window_background">#141218</color>
     <color name="ic_launcher_background">#1B1530</color>
 </resources>
