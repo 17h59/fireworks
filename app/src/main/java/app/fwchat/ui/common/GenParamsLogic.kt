@@ -2,6 +2,7 @@ package app.fwchat.ui.common
 
 import app.fwchat.data.net.GenParamsCompat
 import app.fwchat.domain.GenParams
+import app.fwchat.domain.Provider
 import app.fwchat.domain.ReasoningEffort
 import java.util.Locale
 
@@ -19,8 +20,23 @@ object GenParamsLogic {
     const val INITIAL_REPETITION = 1.0
     const val INITIAL_SEED = 0L
 
-    /** Certains modèles refusent reasoning_effort = none. */
-    fun supportsNoReasoning(modelId: String?): Boolean = GenParamsCompat.supportsNoReasoning(modelId)
+    /** Modèle Featherless (le fournisseur se déduit de l'id)? null = inconnu, donc non. */
+    fun isFeatherless(modelId: String?): Boolean =
+        modelId != null && Provider.fromModelId(modelId) == Provider.FEATHERLESS
+
+    /**
+     * Certains modèles Fireworks (glm / gpt-oss) refusent reasoning_effort = none. Featherless n'a pas cette
+     * restriction: « Aucun » y est toujours proposé.
+     */
+    fun supportsNoReasoning(modelId: String?): Boolean =
+        isFeatherless(modelId) || GenParamsCompat.supportsNoReasoning(modelId)
+
+    /** Aide affichée pour les modèles Featherless (seul « Aucun » agit), null sinon. */
+    fun featherlessReasoningHint(modelId: String?): String? =
+        if (isFeatherless(modelId)) {
+            "Pour Featherless, seul « Aucun » agit (désactive la réflexion si le modèle le permet); " +
+                "les autres niveaux n'ont pas d'effet."
+        } else null
 
     /** Valeur globale « Aucun » ignorée par le modèle (glm / gpt-oss): aide discrète dans l'éditeur. */
     fun noReasoningIgnored(params: GenParams, modelId: String?): Boolean =

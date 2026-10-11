@@ -51,6 +51,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
@@ -269,6 +270,7 @@ private fun TruncatedNotice(m: Message, generating: Boolean, cb: MessageCallback
 @Composable
 private fun ErrorBlock(m: Message, generating: Boolean, cb: MessageCallbacks) {
     val kind = ErrorKinds.classify(m.error)
+    val uriHandler = LocalUriHandler.current
     Surface(
         color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -294,7 +296,21 @@ private fun ErrorBlock(m: Message, generating: Boolean, cb: MessageCallbacks) {
             ) {
                 when (kind) {
                     ErrorKind.INVALID_KEY -> TextButton(onClick = cb.onOpenSettings) { Text("Réglages") }
-                    ErrorKind.MODEL_NOT_FOUND -> TextButton(onClick = cb.onOpenModels) { Text("Choisir un modèle") }
+                    ErrorKind.MODEL_NOT_FOUND, ErrorKind.MODEL_NOT_IN_PLAN ->
+                        TextButton(onClick = cb.onOpenModels) { Text("Choisir un modèle") }
+                    ErrorKind.MODEL_GATED -> {
+                        TextButton(onClick = cb.onOpenModels) { Text("Choisir un modèle") }
+                        TextButton(
+                            onClick = { runCatching { uriHandler.openUri(ErrorKinds.extractUrl(m.error) ?: "https://featherless.ai") } },
+                        ) { Text("Ouvrir featherless.ai") }
+                    }
+                    ErrorKind.MODEL_COLD, ErrorKind.NO_CAPACITY -> {
+                        TextButton(onClick = cb.onOpenModels) { Text("Choisir un modèle") }
+                        TextButton(onClick = { cb.onRetry(m.id) }, enabled = !generating) { Text("Réessayer") }
+                    }
+                    ErrorKind.CONCURRENCY -> TextButton(onClick = { cb.onRetry(m.id) }, enabled = !generating) {
+                        Text("Réessayer")
+                    }
                     ErrorKind.CUT_DURING_REASONING -> TextButton(onClick = cb.onOpenParams) { Text("Paramètres") }
                     ErrorKind.OTHER -> TextButton(onClick = { cb.onRetry(m.id) }, enabled = !generating) {
                         Text("Réessayer")

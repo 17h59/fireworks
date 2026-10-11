@@ -71,6 +71,8 @@ import app.fwchat.ui.common.CostBadge
 import app.fwchat.ui.common.GenParamsEditor
 import app.fwchat.ui.common.ModelPickerSheet
 import app.fwchat.ui.common.PromptPickerSheet
+import app.fwchat.ui.common.ProviderSegments
+import app.fwchat.domain.Provider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -96,10 +98,13 @@ fun SettingsScreen(
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
 
-    var editingKey by rememberSaveable { mutableStateOf(false) }
+    // Fournisseur dont le champ de clé est ouvert (nom de l'enum), null = aucun.
+    var editingName by rememberSaveable { mutableStateOf<String?>(null) }
+    val editingProvider = editingName?.let { n -> Provider.entries.firstOrNull { it.name == n } }
     var newKey by rememberSaveable { mutableStateOf("") }
     var keyVisible by rememberSaveable { mutableStateOf(false) }
-    var confirmRemoveKey by rememberSaveable { mutableStateOf(false) }
+    var removeName by rememberSaveable { mutableStateOf<String?>(null) }
+    val removeProvider = removeName?.let { n -> Provider.entries.firstOrNull { it.name == n } }
     var showModels by rememberSaveable { mutableStateOf(false) }
     var showPrompts by rememberSaveable { mutableStateOf(false) }
     var importUri by rememberSaveable { mutableStateOf<Uri?>(null) }
@@ -114,7 +119,7 @@ fun SettingsScreen(
                     launch { snackbar.showSnackbar(event.text) }
                 }
                 SettingsEvent.KeyReplaced -> {
-                    editingKey = false
+                    editingName = null
                     newKey = ""
                     keyVisible = false
                 }
@@ -177,128 +182,75 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = 24.dp),
         ) {
-            // ------------------------------------------------------------ clé API
-            Section("Clé API Fireworks") {
-                if (state.hasApiKey) {
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Clé enregistrée", style = MaterialTheme.typography.bodyLarge)
-                            Text(
-                                state.keyHint ?: "••••",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+            // ------------------------------------------------------------ fournisseur et clés
+            Section("Fournisseur") {
+                ProviderSegments(
+                    selected = state.activeProvider,
+                    providersWithKey = state.providersWithKey,
+                    onSelect = { p ->
+                        if (p in state.providersWithKey) {
+                            viewModel.selectProvider(p)
+                        } else {
+                            // Pas de clé: on ouvre directement le champ d'ajout.
+                            newKey = ""
+                            keyVisible = false
+                            viewModel.clearKeyError()
+                            editingName = p.name
                         }
-                    }
-                } else {
-                    Text(
-                        "Aucune clé enregistrée.",
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    )
-                }
-                if (editingKey) {
-                    OutlinedTextField(
-                        value = newKey,
-                        onValueChange = { newKey = it; viewModel.clearKeyError() },
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                        label = { Text("Nouvelle clé API") },
-                        singleLine = true,
-                        enabled = !state.validatingKey,
-                        isError = state.keyError != null,
-                        visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Password,
-                            autoCorrectEnabled = false,
-                            imeAction = ImeAction.Done,
-                        ),
-                        keyboardActions = KeyboardActions(onDone = { viewModel.replaceKey(newKey) }),
-                        trailingIcon = {
-                            IconButton(onClick = { keyVisible = !keyVisible }) {
-                                Icon(
-                                    imageVector = if (keyVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                    contentDescription = if (keyVisible) "Masquer la clé" else "Afficher la clé",
-                                )
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                for (provider in Provider.entries) {
+                    val hasKey = provider in state.providersWithKey
+                    ProviderKeyRow(
+                        provider = provider,
+                        active = provider == state.activeProvider,
+                        hasKey = hasKey,
+                        hint = state.keyHints[provider],
+                        editing = editingProvider == provider,
+                        validating = state.validatingKey && state.keyProvider == provider,
+                        error = state.keyError.takeIf { state.keyProvider == provider },
+                        newKey = newKey,
+                        keyVisible = keyVisible,
+                        onNewKeyChange = { newKey = it; viewModel.clearKeyError() },
+                        onToggleVisible = { keyVisible = !keyVisible },
+                        onStartEdit = {
+                            newKey = ""
+                            keyVisible = false
+                            viewModel.clearKeyError()
+                            editingName = provider.name
+                        },
+                        onCancel = {
+                            editingName = null
+                            newKey = ""
+                            keyVisible = false
+                            viewModel.clearKeyError()
+                        },
+                        onPaste = {
+                            scope.launch {
+                                val text = clipboard.getClipEntry()?.clipData?.takeIf { it.itemCount > 0 }
+                                    ?.getItemAt(0)?.text?.toString()
+                                if (!text.isNullOrBlank()) {
+                                    newKey = text.trim()
+                                    viewModel.clearKeyError()
+                                }
                             }
                         },
-                        supportingText = state.keyError?.let { err -> { Text(err) } },
+                        onSubmit = { viewModel.replaceKey(provider, newKey) },
+                        onRemove = { removeName = provider.name },
                     )
-                    FlowRow(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        TextButton(
-                            enabled = !state.validatingKey,
-                            modifier = Modifier.heightIn(min = 48.dp),
-                            onClick = {
-                                scope.launch {
-                                    val text = clipboard.getClipEntry()?.clipData?.takeIf { it.itemCount > 0 }
-                                        ?.getItemAt(0)?.text?.toString()
-                                    if (!text.isNullOrBlank()) {
-                                        newKey = text.trim()
-                                        viewModel.clearKeyError()
-                                    }
-                                }
-                            },
-                        ) { Text("Coller") }
-                        TextButton(
-                            enabled = !state.validatingKey,
-                            modifier = Modifier.heightIn(min = 48.dp),
-                            onClick = {
-                                editingKey = false
-                                newKey = ""
-                                keyVisible = false
-                                viewModel.clearKeyError()
-                            },
-                        ) { Text("Annuler") }
-                        Button(
-                            onClick = { viewModel.replaceKey(newKey) },
-                            enabled = !state.validatingKey && newKey.isNotBlank(),
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        ) {
-                            if (state.validatingKey) {
-                                CircularProgressIndicator(
-                                    Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                )
-                            } else {
-                                Text("Valider")
-                            }
-                        }
-                    }
-                } else {
-                    FlowRow(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        OutlinedButton(
-                            onClick = { editingKey = true },
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        ) { Text(if (state.hasApiKey) "Remplacer la clé" else "Ajouter une clé") }
-                        if (state.hasApiKey) {
-                            TextButton(
-                                onClick = { confirmRemoveKey = true },
-                                modifier = Modifier.heightIn(min = 48.dp),
-                            ) { Text("Supprimer la clé", color = MaterialTheme.colorScheme.error) }
-                        }
-                    }
                 }
             }
 
             SectionDivider()
 
             // ------------------------------------------------------------ modèle par défaut
-            Section("Modèle par défaut") {
+            Section("Modèle par défaut (${state.activeProvider.label})") {
                 ClickableRow(
-                    title = modelSummary(state.defaultModelId, state.models),
+                    title = modelSummary(state.defaultModelId, state.models, state.plan),
                     subtitle = "Utilisé pour les nouveaux chats",
                     onClick = { showModels = true },
-                    costModelId = state.defaultModelId,
+                    costModelId = state.defaultModelId?.takeIf { state.activeProvider == Provider.FIREWORKS },
                 )
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp),
@@ -327,9 +279,21 @@ fun SettingsScreen(
 
             SectionDivider()
 
-            // ------------------------------------------------------------ dépenses et crédit
-            Section("Dépenses & crédit") {
-                BillingCard(billing = container.billing, scope = container.appScope)
+            if (state.activeProvider == Provider.FIREWORKS) {
+                // -------------------------------------------------------- dépenses et crédit (Fireworks seulement)
+                Section("Dépenses & crédit") {
+                    BillingCard(billing = container.billing, scope = container.appScope)
+                }
+            } else {
+                // -------------------------------------------------------- plan Featherless
+                Section("Plan Featherless") {
+                    PlanCard(
+                        plan = state.plan,
+                        loading = state.planLoading,
+                        error = state.planError,
+                        onReload = viewModel::loadPlan,
+                    )
+                }
             }
 
             SectionDivider()
@@ -414,7 +378,7 @@ fun SettingsScreen(
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
                 Text(
-                    "Application locale pour Fireworks AI. Aucune donnée ne quitte ton téléphone hormis les requêtes d'inférence.",
+                    "Application locale pour Fireworks AI et Featherless. Aucune donnée ne quitte ton téléphone hormis les requêtes d'inférence.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -429,9 +393,20 @@ fun SettingsScreen(
         ModelPickerSheet(
             models = state.models,
             selectedId = state.defaultModelId,
+            activeProvider = state.activeProvider,
+            providersWithKey = state.providersWithKey,
+            plan = state.plan,
             onSelect = { id ->
                 viewModel.setDefaultModel(id)
                 showModels = false
+            },
+            onSwitchProvider = viewModel::selectProvider,
+            onAddKey = { p ->
+                showModels = false
+                newKey = ""
+                keyVisible = false
+                viewModel.clearKeyError()
+                editingName = p.name
             },
             onRefresh = viewModel::refreshModelsForSheet,
             onDismiss = { showModels = false },
@@ -448,27 +423,27 @@ fun SettingsScreen(
             onDismiss = { showPrompts = false },
         )
     }
-    if (confirmRemoveKey) {
+    if (removeProvider != null) {
         AlertDialog(
-            onDismissRequest = { confirmRemoveKey = false },
-            title = { Text("Supprimer la clé ?") },
+            onDismissRequest = { removeName = null },
+            title = { Text("Supprimer la clé ${removeProvider.label} ?") },
             text = {
                 Text(
-                    "La clé sera effacée de ce téléphone. Tes conversations restent intactes, " +
-                        "mais il faudra saisir une clé pour continuer à discuter.",
+                    "La clé sera effacée de ce téléphone. Tes conversations restent intactes. " +
+                        removeKeyConsequence(removeProvider, state.activeProvider, state.providersWithKey),
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        confirmRemoveKey = false
-                        viewModel.removeKey()
+                        removeName = null
+                        viewModel.removeKey(removeProvider)
                     },
                     modifier = Modifier.heightIn(min = 48.dp),
                 ) { Text("Supprimer", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmRemoveKey = false }, modifier = Modifier.heightIn(min = 48.dp)) {
+                TextButton(onClick = { removeName = null }, modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Annuler")
                 }
             },
@@ -538,6 +513,16 @@ fun SettingsScreen(
 }
 
 // ---------------------------------------------------------------------- composants locaux
+
+/** Ce qui se passe après la suppression de la clé de [target] (affiché dans la confirmation). */
+internal fun removeKeyConsequence(target: Provider, active: Provider, withKey: Set<Provider>): String {
+    val other = withKey.firstOrNull { it != target }
+    return when {
+        other == null -> "Il faudra saisir une clé pour continuer à discuter."
+        target == active -> "Le mode ${other.label} sera activé."
+        else -> "Le mode ${active.label} reste actif."
+    }
+}
 
 @Composable
 private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) {

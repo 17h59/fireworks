@@ -130,7 +130,20 @@ fun Message.isTruncated(): Boolean =
     role == Role.ASSISTANT && status == MessageStatus.COMPLETE && finishReason == "length" && content.isNotEmpty()
 
 /** Ce que l'utilisateur peut faire face à une erreur de génération. */
-enum class ErrorKind { INVALID_KEY, MODEL_NOT_FOUND, CUT_DURING_REASONING, OTHER }
+enum class ErrorKind {
+    INVALID_KEY, MODEL_NOT_FOUND, CUT_DURING_REASONING,
+    /** Featherless: modèle verrouillé (HuggingFace). */
+    MODEL_GATED,
+    /** Featherless: modèle hors du plan. */
+    MODEL_NOT_IN_PLAN,
+    /** Featherless: modèle froid (chargement long). */
+    MODEL_COLD,
+    /** Capacité insuffisante pour ce modèle (503). */
+    NO_CAPACITY,
+    /** Featherless: limite de concurrence atteinte. */
+    CONCURRENCY,
+    OTHER,
+}
 
 object ErrorKinds {
     /**
@@ -142,10 +155,21 @@ object ErrorKinds {
         return when {
             "clé api" in t && ("invalide" in t || "manquante" in t) -> ErrorKind.INVALID_KEY
             "modèle introuvable" in t -> ErrorKind.MODEL_NOT_FOUND
+            "modèle est verrouillé" in t -> ErrorKind.MODEL_GATED
+            "hors de ton plan" in t -> ErrorKind.MODEL_NOT_IN_PLAN
+            "modèle froid" in t -> ErrorKind.MODEL_COLD
+            "capacité insuffisante" in t -> ErrorKind.NO_CAPACITY
+            "limite de concurrence" in t -> ErrorKind.CONCURRENCY
             "coupé pendant la réflexion" in t -> ErrorKind.CUT_DURING_REASONING
             else -> ErrorKind.OTHER
         }
     }
+
+    /** Première URL http(s) du message (ex. lien HuggingFace d'un modèle verrouillé), sans ponctuation finale. */
+    fun extractUrl(error: String?): String? =
+        error?.let { URL_REGEX.find(it)?.value?.trimEnd('.', ',', ')', ';', ':', '!', '?') }
+
+    private val URL_REGEX = Regex("https?://\\S+")
 
     /**
      * Une erreur du moteur est-elle déjà visible dans le fil (bloc d'erreur d'un message)? Alors pas de snackbar en double.

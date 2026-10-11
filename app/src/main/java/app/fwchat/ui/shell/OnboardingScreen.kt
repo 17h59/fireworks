@@ -48,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.fwchat.R
+import app.fwchat.domain.Provider
+import app.fwchat.ui.common.ProviderSegments
 import app.fwchat.ui.theme.FwMark
 import kotlinx.coroutines.launch
 
@@ -60,6 +62,8 @@ fun OnboardingScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     // rememberSaveable: la clé survit à la rotation, mais jamais écrite ailleurs que dans le Bundle d'état de l'activité.
     var key by rememberSaveable { mutableStateOf("") }
+    var providerName by rememberSaveable { mutableStateOf(Provider.FIREWORKS.name) }
+    val provider = Provider.entries.firstOrNull { it.name == providerName } ?: Provider.FIREWORKS
     var visible by rememberSaveable { mutableStateOf(false) }
     val clipboard = LocalClipboard.current
     val uriHandler = LocalUriHandler.current
@@ -96,15 +100,30 @@ fun OnboardingScreen(
                     Bullet(stringResource(R.string.onboarding_point_account))
                 }
                 Text(
-                    text = stringResource(R.string.onboarding_body),
+                    text = "Choisis ton fournisseur. Tu pourras en ajouter un second plus tard dans les Réglages.",
                     style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                ProviderSegments(
+                    selected = provider,
+                    providersWithKey = Provider.entries.toSet(),
+                    onSelect = {
+                        if (it != provider && !state.loading) {
+                            providerName = it.name
+                            viewModel.clearError()
+                        }
+                    },
+                )
+                Text(
+                    text = onboardingHelp(provider),
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedTextField(
                     value = key,
                     onValueChange = { key = it; viewModel.clearError() },
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text(stringResource(R.string.onboarding_key_label)) },
+                    label = { Text("Clé API ${provider.label}") },
                     singleLine = true,
                     enabled = !state.loading,
                     isError = state.error != null,
@@ -115,7 +134,7 @@ fun OnboardingScreen(
                         imeAction = ImeAction.Done,
                     ),
                     keyboardActions = androidx.compose.foundation.text.KeyboardActions(
-                        onDone = { viewModel.submit(key) },
+                        onDone = { viewModel.submit(provider, key) },
                     ),
                     trailingIcon = {
                         IconButton(onClick = { visible = !visible }) {
@@ -127,7 +146,7 @@ fun OnboardingScreen(
                             )
                         }
                     },
-                    supportingText = state.error?.let { err -> { Text(stringResource(errorText(err))) } },
+                    supportingText = state.message?.let { msg -> { Text(msg) } },
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -149,12 +168,12 @@ fun OnboardingScreen(
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) { Text(stringResource(R.string.onboarding_paste)) }
                     TextButton(
-                        onClick = { uriHandler.openUri("https://fireworks.ai") },
+                        onClick = { uriHandler.openUri(providerSiteUrl(provider)) },
                         modifier = Modifier.heightIn(min = 48.dp),
-                    ) { Text(stringResource(R.string.onboarding_open_site)) }
+                    ) { Text("Ouvrir ${providerSiteName(provider)}") }
                 }
                 Button(
-                    onClick = { viewModel.submit(key) },
+                    onClick = { viewModel.submit(provider, key) },
                     enabled = !state.loading && key.isNotBlank(),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                 ) {
@@ -173,11 +192,20 @@ fun OnboardingScreen(
     }
 }
 
-private fun errorText(e: OnboardingError): Int = when (e) {
-    OnboardingError.EMPTY_KEY -> R.string.onboarding_error_empty
-    OnboardingError.UNAUTHORIZED -> R.string.onboarding_error_unauthorized
-    OnboardingError.NETWORK -> R.string.onboarding_error_network
-    OnboardingError.OTHER -> R.string.onboarding_error_other
+/** Adresse du site où créer une clé. */
+internal fun providerSiteUrl(provider: Provider): String = "https://" + providerSiteName(provider)
+
+internal fun providerSiteName(provider: Provider): String = when (provider) {
+    Provider.FIREWORKS -> "fireworks.ai"
+    Provider.FEATHERLESS -> "featherless.ai"
+}
+
+/** Texte d'aide adapté au fournisseur choisi. */
+internal fun onboardingHelp(provider: Provider): String = when (provider) {
+    Provider.FIREWORKS ->
+        "Crée une clé sur fireworks.ai (section Clés API de ton compte), puis colle-la ci-dessous. Facturation à l'usage."
+    Provider.FEATHERLESS ->
+        "Crée une clé sur featherless.ai (section API Keys de ton compte), puis colle-la ci-dessous. Abonnement forfaitaire."
 }
 
 /** Puce de réassurance: coche + texte court. */

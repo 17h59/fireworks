@@ -1,9 +1,14 @@
 package app.fwchat.ui.settings
 
 import app.fwchat.domain.FireworksException
+import app.fwchat.data.net.toUserMessage
 import app.fwchat.domain.ModelInfo
+import app.fwchat.domain.PlanInfo
+import app.fwchat.domain.Provider
 import app.fwchat.domain.SystemPrompt
+import app.fwchat.ui.common.effectiveContextLabel
 import app.fwchat.ui.common.formatContext
+import app.fwchat.ui.common.formatInt
 import java.io.IOException
 import java.time.LocalDate
 
@@ -31,12 +36,12 @@ fun promptLabel(defaultId: String?, prompts: List<SystemPrompt>): String {
 fun isStaleDefaultPrompt(defaultId: String?, prompts: List<SystemPrompt>): Boolean =
     defaultId != null && prompts.none { it.id == defaultId }
 
-/** Ligne de résumé du modèle par défaut: nom court + contexte (ex. « glm-5p3-flash · contexte 128k »). */
-fun modelSummary(modelId: String?, models: List<ModelInfo>): String {
+/** Ligne de résumé du modèle par défaut: nom court + contexte effectif (ex. « glm-5p3-flash · contexte 128k »). */
+fun modelSummary(modelId: String?, models: List<ModelInfo>, plan: PlanInfo? = null): String {
     if (modelId == null) return "Aucun modèle choisi"
     val info = models.firstOrNull { it.id == modelId }
         ?: return modelId.substringAfterLast('/') + " · indisponible dans la liste actuelle"
-    val ctx = formatContext(info.contextLength)?.let { "contexte $it" } ?: "contexte inconnu"
+    val ctx = effectiveContextLabel(info, plan)?.let { "contexte $it" } ?: "contexte inconnu"
     return "${info.shortId} · $ctx"
 }
 
@@ -44,20 +49,31 @@ fun modelSummary(modelId: String?, models: List<ModelInfo>): String {
 fun modelCountLabel(count: Int): String = when (count) {
     0 -> "Aucun modèle disponible"
     1 -> "1 modèle disponible"
-    else -> "$count modèles disponibles"
+    else -> "${formatInt(count)} modèles disponibles"
 }
 
 /** Message lisible pour une erreur de vérification de clé ou de rechargement des modèles. */
-fun describeNetworkError(e: Throwable?): String = when (e) {
+fun describeNetworkError(e: Throwable?, provider: Provider = Provider.FIREWORKS): String = when (e) {
     is FireworksException.Unauthorized ->
-        "Cette clé a été refusée par Fireworks. Vérifie qu'elle est complète et toujours active."
-    is FireworksException.InsufficientCredit -> "Crédit Fireworks insuffisant. Recharge ton compte puis réessaie."
-    is FireworksException.RateLimited -> "Trop de requêtes pour le moment. Réessaie dans un instant."
+        "Cette clé a été refusée par ${provider.label}. Vérifie qu'elle est complète et toujours active."
+    is FireworksException.RateLimited ->
+        if (e.concurrency) e.toUserMessage() else "Trop de requêtes pour le moment. Réessaie dans un instant."
     is FireworksException.Network, is IOException ->
-        "Impossible de joindre Fireworks. Vérifie ta connexion et réessaie."
-    is FireworksException.Http -> "Fireworks a répondu par une erreur (HTTP ${e.code}). Réessaie dans un instant."
+        "Impossible de joindre ${provider.label}. Vérifie ta connexion et réessaie."
+    is FireworksException.Http -> "${provider.label} a répondu par une erreur (HTTP ${e.code}). Réessaie dans un instant."
+    is FireworksException -> e.toUserMessage()
     else -> "L'opération a échoué. Réessaie dans un instant."
 }
+
+/** Plan Featherless en une ligne: « Premium · concurrence 4 · contexte max 32k ». */
+fun planSummary(plan: PlanInfo): String = listOfNotNull(
+    plan.name.ifBlank { "Plan Featherless" },
+    plan.concurrency?.let { "concurrence $it" },
+    plan.maxContextLength?.let { formatContext(it) }?.let { "contexte max $it" },
+).joinToString(" · ")
+
+/** Libellé de la clé d'un fournisseur: « Clé Fireworks ». */
+fun keyTitle(provider: Provider): String = "Clé ${provider.label}"
 
 /** Nom de fichier proposé à l'export: fwchat-sauvegarde-AAAA-MM-JJ.json. */
 fun backupFileName(date: LocalDate): String = "fwchat-sauvegarde-$date.json"

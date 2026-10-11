@@ -41,17 +41,10 @@
     <string name="onboarding_point_local">Local</string>
     <string name="onboarding_point_key">Clé chiffrée sur ton téléphone</string>
     <string name="onboarding_point_account">Aucun compte</string>
-    <string name="onboarding_body">Tes conversations restent sur cet appareil. Crée une clé sur fireworks.ai (section Clés API de ton compte), puis colle-la ci-dessous.</string>
-    <string name="onboarding_key_label">Clé API Fireworks</string>
     <string name="onboarding_show">Afficher la clé</string>
     <string name="onboarding_hide">Masquer la clé</string>
     <string name="onboarding_paste">Coller</string>
     <string name="onboarding_validate">Valider</string>
-    <string name="onboarding_open_site">Ouvrir fireworks.ai</string>
-    <string name="onboarding_error_empty">Colle ta clé API pour continuer.</string>
-    <string name="onboarding_error_unauthorized">Cette clé a été refusée par Fireworks. Vérifie qu’elle est complète et toujours active.</string>
-    <string name="onboarding_error_network">Impossible de joindre Fireworks. Vérifie ta connexion et réessaie.</string>
-    <string name="onboarding_error_other">La vérification a échoué. Réessaie dans un instant.</string>
 
     <!-- Prompts système -->
     <string name="prompts_title">Prompts système</string>

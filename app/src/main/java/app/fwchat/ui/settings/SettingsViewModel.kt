@@ -3,13 +3,15 @@ package app.fwchat.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.fwchat.domain.ChatRepository
-import app.fwchat.domain.activeApiKey
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.ModelInfo
 import app.fwchat.domain.ModelRepository
+import app.fwchat.domain.PlanInfo
+import app.fwchat.domain.Provider
 import app.fwchat.domain.SettingsRepository
 import app.fwchat.domain.SystemPrompt
 import app.fwchat.domain.SystemPromptRepository
+import app.fwchat.ui.common.modelWarning
 import app.fwchat.ui.shell.applyDefaultModelIfNeeded
 import app.fwchat.ui.shell.containerFactory
 import kotlinx.coroutines.CancellationException
@@ -37,12 +39,18 @@ enum class BackupOp { EXPORTING, IMPORTING }
 data class SettingsUiState(
     val loaded: Boolean = false,
     val hasApiKey: Boolean = false,
-    /** « •••• » + 4 derniers caractères, jamais la clé. */
-    val keyHint: String? = null,
+    /** Mode actif: fournisseur des nouveaux chats, de la liste de modèles et du modèle par défaut. */
+    val activeProvider: Provider = Provider.FIREWORKS,
+    val providersWithKey: Set<Provider> = emptySet(),
+    /** « •••• » + 4 derniers caractères par fournisseur, jamais la clé. */
+    val keyHints: Map<Provider, String?> = emptyMap(),
     /** Vérification de la nouvelle clé en cours. */
     val validatingKey: Boolean = false,
-    /** Erreur de la dernière tentative de remplacement (affichée dans le champ). */
+    /** Fournisseur dont la clé est en cours de vérification (ou dont la dernière tentative a échoué). */
+    val keyProvider: Provider? = null,
+    /** Erreur de la dernière tentative d'ajout/remplacement (affichée dans le champ de [keyProvider]). */
     val keyError: String? = null,
+    /** Modèle par défaut du fournisseur ACTIF. */
     val defaultModelId: String? = null,
     val models: List<ModelInfo> = emptyList(),
     val refreshingModels: Boolean = false,
@@ -51,14 +59,18 @@ data class SettingsUiState(
     /** null tant que les réglages ne sont pas chargés. Valeur locale: reflète l'édition en cours (debounce). */
     val params: GenParams? = null,
     val backupOp: BackupOp? = null,
+    /** Plan Featherless en cache (mode Featherless). */
+    val plan: PlanInfo? = null,
+    val planLoading: Boolean = false,
+    val planError: String? = null,
 )
 
 /** Événements ponctuels (snackbar, navigation). */
 sealed interface SettingsEvent {
     data class Message(val text: String) : SettingsEvent
-    /** Le remplacement de clé a réussi: l'UI referme le champ. */
+    /** L'ajout ou le remplacement de clé a réussi: l'UI referme le champ. */
     data object KeyReplaced : SettingsEvent
-    /** La clé a été effacée: l'UI renvoie vers l'onboarding. */
+    /** Plus aucune clé: l'UI renvoie vers l'onboarding. */
     data object ApiKeyRemoved : SettingsEvent
 }
 
@@ -75,9 +87,12 @@ class SettingsViewModel(
 ) : ViewModel() {
 
     private data class Local(
-        val keyHint: String? = null,
+        val keyHints: Map<Provider, String?> = emptyMap(),
         val validatingKey: Boolean = false,
+        val keyProvider: Provider? = null,
         val keyError: String? = null,
+        val planLoading: Boolean = false,
+        val planError: String? = null,
         val refreshingModels: Boolean = false,
         val params: GenParams? = null,
         val backupOp: BackupOp? = null,
@@ -91,14 +106,20 @@ class SettingsViewModel(
     private var pendingParams: GenParams? = null
 
     val state: StateFlow<SettingsUiState> = combine(
-        settings.settings, models.models, prompts.observeAll(), local,
-    ) { s, ms, ps, l ->
+        settings.settings, models.models, prompts.observeAll(), local, models.plan,
+    ) { s, ms, ps, l, plan ->
         SettingsUiState(
             loaded = l.params != null,
             hasApiKey = s.hasApiKey,
-            keyHint = l.keyHint,
+            activeProvider = s.activeProvider,
+            providersWithKey = s.providersWithKey,
+            keyHints = l.keyHints,
             validatingKey = l.validatingKey,
+            keyProvider = l.keyProvider,
             keyError = l.keyError,
+            plan = plan,
+            planLoading = l.planLoading,
+            planError = l.planError,
             defaultModelId = s.defaultModelId,
             models = ms,
             refreshingModels = l.refreshingModels,
@@ -116,7 +137,17 @@ class SettingsViewModel(
             val initial = settings.settings.first().defaultParams
             local.update { if (it.params == null) it.copy(params = initial) else it }
         }
-        viewModelScope.launch { refreshKeyHint() }
+        // Indices de clés (•••• + 4 derniers) pour chaque fournisseur, relus quand l'ensemble des clés change.
+        viewModelScope.launch {
+            settings.settings.map { it.providersWithKey }.distinctUntilChanged().collect { refreshKeyHints() }
+        }
+        // Mode Featherless (avec clé): le plan est rechargé à l'ouverture et à chaque bascule.
+        viewModelScope.launch {
+            settings.settings
+                .map { it.activeProvider == Provider.FEATHERLESS && Provider.FEATHERLESS in it.providersWithKey }
+                .distinctUntilChanged()
+                .collect { if (it) loadPlan() }
+        }
         // Prompt par défaut supprimé (depuis la bibliothèque ou par un import): retour à « Aucun prompt système ».
         viewModelScope.launch {
             combine(settings.settings.map { it.defaultSystemPromptId }.distinctUntilChanged(), prompts.observeAll()) { id, ps ->
@@ -135,41 +166,58 @@ class SettingsViewModel(
         }
     }
 
-    private suspend fun refreshKeyHint() {
-        val hint = try {
-            maskApiKey(settings.activeApiKey())
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            null
+    private suspend fun refreshKeyHints() {
+        val hints = HashMap<Provider, String?>()
+        for (p in Provider.entries) {
+            hints[p] = try {
+                maskApiKey(settings.apiKey(p))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
         }
-        local.update { it.copy(keyHint = hint) }
+        local.update { it.copy(keyHints = hints) }
     }
 
     private fun post(text: String) {
         eventChannel.trySend(SettingsEvent.Message(text))
     }
 
-    // ------------------------------------------------------------------ clé API
+    // ------------------------------------------------------------------ fournisseur et clés API
 
     fun clearKeyError() {
-        local.update { if (it.keyError != null) it.copy(keyError = null) else it }
+        local.update { if (it.keyError != null) it.copy(keyError = null, keyProvider = null) else it }
+    }
+
+    /** Segment « Fireworks | Featherless »: change de mode. Sans clé pour ce fournisseur, rien (l'UI ouvre l'ajout). */
+    fun selectProvider(provider: Provider) {
+        viewModelScope.launch {
+            try {
+                val s = settings.settings.first()
+                if (provider in s.providersWithKey && provider != s.activeProvider) settings.setActiveProvider(provider)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                post("Impossible de changer de mode. Réessaie.")
+            }
+        }
     }
 
     /**
-     * Enregistre la nouvelle clé puis vérifie qu'elle fonctionne en rechargeant les modèles.
-     * En cas d'échec (ou d'annulation), l'ancienne clé est restaurée.
+     * Enregistre la clé de [provider] (ajout ou remplacement) puis vérifie qu'elle fonctionne en rechargeant ses
+     * modèles. En cas d'échec (ou d'annulation), l'ancienne clé de CE fournisseur est restaurée (ou effacée).
+     * Une clé ajoutée pour un fournisseur qui n'en avait pas active son mode.
      */
-    fun replaceKey(rawKey: String) {
+    fun replaceKey(provider: Provider, rawKey: String) {
         val key = rawKey.trim()
         if (local.value.validatingKey) return
         if (key.isEmpty()) {
-            local.update { it.copy(keyError = "Colle ta nouvelle clé API pour continuer.") }
+            local.update { it.copy(keyProvider = provider, keyError = "Colle ta clé API ${provider.label} pour continuer.") }
             return
         }
-        local.update { it.copy(validatingKey = true, keyError = null) }
+        local.update { it.copy(validatingKey = true, keyProvider = provider, keyError = null) }
         viewModelScope.launch {
-            val provider = settings.settings.first().activeProvider
             val old = try {
                 settings.apiKey(provider)
             } catch (e: CancellationException) {
@@ -197,36 +245,97 @@ class SettingsViewModel(
                 }
             }
             if (success) {
-                runCatching { applyDefaultModelIfNeeded(settings, models) }
-                local.update { it.copy(validatingKey = false, keyError = null, keyHint = maskApiKey(key)) }
+                runCatching { applyDefaultModelIfNeeded(settings, models, provider) }
+                var switched = false
+                if (old == null) {
+                    // Nouveau fournisseur: on passe dessus (la clé vient d'être validée, donc l'activation est acceptée).
+                    switched = runCatching {
+                        if (settings.settings.first().activeProvider != provider) {
+                            settings.setActiveProvider(provider)
+                            true
+                        } else false
+                    }.getOrDefault(false)
+                }
+                if (provider == Provider.FEATHERLESS) runCatching { models.refreshPlan() }
+                refreshKeyHints()
+                local.update { it.copy(validatingKey = false, keyProvider = null, keyError = null) }
                 eventChannel.trySend(SettingsEvent.KeyReplaced)
-                post("Clé enregistrée : Fireworks l'a acceptée.")
+                post(
+                    "Clé ${provider.label} enregistrée : ${provider.label} l'a acceptée." +
+                        if (switched) " Mode ${provider.label} activé." else "",
+                )
             } else {
-                local.update { it.copy(validatingKey = false, keyError = describeNetworkError(failure)) }
+                local.update {
+                    it.copy(validatingKey = false, keyProvider = provider, keyError = describeNetworkError(failure, provider))
+                }
             }
         }
     }
 
-    /** Efface la clé; l'UI est ensuite renvoyée vers l'onboarding via [SettingsEvent.ApiKeyRemoved]. */
-    fun removeKey() {
+    /**
+     * Efface la clé de [provider]. Si c'était celle du mode actif et que l'autre fournisseur a une clé, on bascule
+     * dessus; sans aucune clé, l'UI est renvoyée vers l'onboarding via [SettingsEvent.ApiKeyRemoved].
+     */
+    fun removeKey(provider: Provider) {
         viewModelScope.launch {
+            val wasActive: Boolean
             try {
-                settings.setApiKey(settings.settings.first().activeProvider, null)
+                wasActive = settings.settings.first().activeProvider == provider
+                settings.setApiKey(provider, null)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 post("Impossible de supprimer la clé. Réessaie.")
                 return@launch
             }
-            local.update { it.copy(keyHint = null, keyError = null) }
-            eventChannel.trySend(SettingsEvent.ApiKeyRemoved)
+            local.update { it.copy(keyProvider = null, keyError = null) }
+            refreshKeyHints()
+            val s = settings.settings.first()
+            if (!s.hasApiKey) {
+                eventChannel.trySend(SettingsEvent.ApiKeyRemoved)
+                return@launch
+            }
+            var switchedTo: Provider? = null
+            if (wasActive && s.activeProvider == provider) {
+                // Le dépôt bascule déjà; on s'en assure si ce n'est pas le cas.
+                val other = s.providersWithKey.firstOrNull()
+                if (other != null) {
+                    runCatching { settings.setActiveProvider(other) }
+                    switchedTo = other
+                }
+            } else if (wasActive) {
+                switchedTo = s.activeProvider
+            }
+            post("Clé ${provider.label} supprimée." + (switchedTo?.let { " Mode ${it.label} activé." } ?: ""))
         }
     }
 
     // ------------------------------------------------------------------ modèle et prompt par défaut
 
+    /** Modèle par défaut du fournisseur ACTIF; avertit si le modèle est verrouillé ou hors plan. */
     fun setDefaultModel(modelId: String) {
-        viewModelScope.launch { settings.setDefaultModel(settings.settings.first().activeProvider, modelId) }
+        viewModelScope.launch {
+            settings.setDefaultModel(settings.settings.first().activeProvider, modelId)
+            modelWarning(state.value.models.firstOrNull { it.id == modelId })?.let { post(it) }
+        }
+    }
+
+    /** Recharge le plan Featherless (état dans [SettingsUiState.plan] / planLoading / planError). */
+    fun loadPlan() {
+        if (local.value.planLoading) return
+        local.update { it.copy(planLoading = true, planError = null) }
+        viewModelScope.launch {
+            try {
+                val r = models.refreshPlan()
+                local.update {
+                    it.copy(planLoading = false, planError = r.exceptionOrNull()?.let { e -> describeNetworkError(e, Provider.FEATHERLESS) })
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                local.update { it.copy(planLoading = false, planError = describeNetworkError(e, Provider.FEATHERLESS)) }
+            }
+        }
     }
 
     fun setDefaultPrompt(promptId: String?) {
@@ -235,15 +344,17 @@ class SettingsViewModel(
 
     /** Pour la feuille de choix du modèle (qui affiche elle-même son spinner et son erreur). */
     suspend fun refreshModelsForSheet(): Result<Unit> {
+        val provider = settings.settings.first().activeProvider
         val result = try {
-            models.refresh()
+            models.refresh(provider)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
+        if (result.isSuccess && provider == Provider.FEATHERLESS) runCatching { models.refreshPlan() }
         // Les erreurs lisibles remplacent les messages bruts de l'API.
-        return result.fold({ result }, { Result.failure(IllegalStateException(describeNetworkError(it))) })
+        return result.fold({ result }, { Result.failure(IllegalStateException(describeNetworkError(it, provider))) })
     }
 
     /** Bouton « Recharger la liste des modèles »: résultat en message (nombre de modèles ou erreur). */
@@ -251,18 +362,21 @@ class SettingsViewModel(
         if (local.value.refreshingModels) return
         local.update { it.copy(refreshingModels = true) }
         viewModelScope.launch {
+            var provider = Provider.FIREWORKS
             try {
-                val result = models.refresh()
+                provider = settings.settings.first().activeProvider
+                val result = models.refresh(provider)
                 if (result.isSuccess) {
-                    runCatching { applyDefaultModelIfNeeded(settings, models) }
-                    post(modelCountLabel(models.models.first().size) + ".")
+                    runCatching { applyDefaultModelIfNeeded(settings, models, provider) }
+                    if (provider == Provider.FEATHERLESS) runCatching { models.refreshPlan() }
+                    post(modelCountLabel(models.modelsFor(provider).first().size) + ".")
                 } else {
-                    post(describeNetworkError(result.exceptionOrNull()))
+                    post(describeNetworkError(result.exceptionOrNull(), provider))
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                post(describeNetworkError(e))
+                post(describeNetworkError(e, provider))
             } finally {
                 local.update { it.copy(refreshingModels = false) }
             }

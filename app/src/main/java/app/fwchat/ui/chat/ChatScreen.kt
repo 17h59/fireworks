@@ -104,6 +104,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import app.fwchat.AppContainer
 import app.fwchat.ui.common.GenParamsSheet
 import app.fwchat.domain.costDescription
+import app.fwchat.domain.Provider
 import app.fwchat.ui.common.CostBadge
 import app.fwchat.ui.common.ModelPickerSheet
 import app.fwchat.ui.common.PromptPickerSheet
@@ -423,9 +424,17 @@ fun ChatScreen(
         ModelPickerSheet(
             models = ui.models,
             selectedId = ui.modelId,
+            activeProvider = ui.activeProvider,
+            providersWithKey = ui.providersWithKey,
+            plan = ui.plan,
             onSelect = { id ->
                 vm.setModel(id)
                 showModels = false
+            },
+            onSwitchProvider = vm::setActiveProvider,
+            onAddKey = {
+                showModels = false
+                currentOnOpenSettings()
             },
             onRefresh = vm::refreshModels,
             onDismiss = { showModels = false },
@@ -533,14 +542,27 @@ private fun ChatPills(ui: ChatUiState, onModel: () -> Unit, onPrompt: () -> Unit
             !ui.modelAvailable -> "${ui.modelId.substringAfterLast('/')} · indisponible"
             else -> ui.modelId.substringAfterLast('/')
         }
+        val modelProvider = ui.modelId?.let { Provider.fromModelId(it) }
+        val foreignProvider = modelProvider?.takeIf { it != ui.activeProvider }
         AssistChip(
             onClick = onModel,
             label = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(modelLabel, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (ui.modelId != null && ui.modelAvailable) {
+                    if (ui.modelId != null && ui.modelAvailable && modelProvider == Provider.FIREWORKS) {
                         Spacer(Modifier.width(4.dp))
                         CostBadge(ui.modelId, fontSize = 10.sp)
+                    }
+                    if (foreignProvider != null) {
+                        // Modèle de l'autre fournisseur que le mode actif: petite marque discrète.
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            foreignProvider.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
                     }
                 }
             },
@@ -550,7 +572,9 @@ private fun ChatPills(ui: ChatUiState, onModel: () -> Unit, onPrompt: () -> Unit
             border = null,
             modifier = Modifier.weight(1f, fill = false).semantics {
                 contentDescription = "Modèle : $modelLabel." +
-                    (ui.modelId?.let { costDescription(it) }?.let { " $it." } ?: "") + " Appuyer pour changer."
+                    (foreignProvider?.let { " Fournisseur ${it.label}." } ?: "") +
+                    (ui.modelId?.takeIf { modelProvider == Provider.FIREWORKS }?.let { costDescription(it) }?.let { " $it." } ?: "") +
+                    " Appuyer pour changer."
             },
         )
         val promptLabel = ui.promptName ?: if (ui.promptLocked) "Sans prompt système" else "Aucun prompt système"

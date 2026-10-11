@@ -107,6 +107,13 @@ fun GenParamsEditor(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            GenParamsLogic.featherlessReasoningHint(modelId)?.let { hint ->
+                Text(
+                    hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Text(
                 "Les modèles à raisonnement consomment des tokens max pour réfléchir.",
                 style = MaterialTheme.typography.bodySmall,

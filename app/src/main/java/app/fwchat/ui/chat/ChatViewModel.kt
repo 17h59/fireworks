@@ -10,6 +10,8 @@ import app.fwchat.domain.ChatRepository
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.ModelInfo
 import app.fwchat.domain.ModelRepository
+import app.fwchat.domain.PlanInfo
+import app.fwchat.domain.Provider
 import app.fwchat.domain.SettingsRepository
 import app.fwchat.domain.StreamingText
 import app.fwchat.domain.SystemPrompt
@@ -28,6 +30,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
@@ -37,6 +40,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import app.fwchat.ui.common.modelWarning
 import java.time.ZonedDateTime
 
 /** Ce que l'écran affiche. Les textes en cours de streaming n'y sont PAS: voir [ChatViewModel.streaming]. */
@@ -55,7 +59,12 @@ data class ChatUiState(
     val modelId: String? = null,
     /** false si le modèle du chat n'est plus dans la liste (et que la liste est chargée). */
     val modelAvailable: Boolean = true,
+    /** Modèles du fournisseur ACTIF (liste du sélecteur). Le modèle du chat peut venir de l'autre fournisseur. */
     val models: List<ModelInfo> = emptyList(),
+    val activeProvider: Provider = Provider.FIREWORKS,
+    val providersWithKey: Set<Provider> = emptySet(),
+    /** Plan Featherless en cache (contexte effectif dans le sélecteur). */
+    val plan: PlanInfo? = null,
     val prompts: List<SystemPrompt> = emptyList(),
     /** Brouillon: id (bibliothèque) du prompt choisi, null = aucun. */
     val selectedPromptId: String? = null,
@@ -159,6 +168,18 @@ class ChatViewModel(
         engine.generatingChats.map { chatId != null && chatId in it }
 
     private val modelsFlow = models.models
+
+    /** Id du modèle courant (brouillon ou chat chargé): son fournisseur peut différer du mode actif. */
+    private val currentModelId: Flow<String?> = combine(draft, chatLoad) { d, load ->
+        if (chatId == null) d.modelId else (load as? ChatLoad.Loaded)?.chat?.modelId
+    }.distinctUntilChanged()
+
+    /** Liste du fournisseur DU MODÈLE courant (« modèle disponible »); à défaut, celle du fournisseur actif. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val ownerModelsFlow: Flow<List<ModelInfo>> = currentModelId
+        .map { id -> id?.let { Provider.fromModelId(it) } }
+        .distinctUntilChanged()
+        .flatMapLatest { p -> if (p == null) models.models else models.modelsFor(p) }
     private val promptsFlow = prompts.observeAll()
 
     /** Texte live des messages en cours: lu directement par la liste (ne recompose que le message concerné). */
@@ -195,12 +216,15 @@ class ChatViewModel(
         val core = combine(draft, draftMeta, chatLoad, threadFlow, generatingFlow) { d, meta, load, thread, gen ->
             Core(d, meta, load, thread, gen)
         }
-        val extras = combine(modelsFlow, promptsFlow, localParams, thinking, editing) { m, p, lp, th, ed ->
+        val modelLists = combine(modelsFlow, ownerModelsFlow, models.plan) { active, owner, plan ->
+            ModelLists(active, owner, plan)
+        }
+        val extras = combine(modelLists, promptsFlow, localParams, thinking, editing) { m, p, lp, th, ed ->
             Extras(m, p, lp, th, ed)
         }
         // Valeurs par défaut globales (réglages): une panne de lecture ne doit jamais casser l'écran.
         val defaults = settings.settings
-            .map { Defaults(it.defaultParams, it.defaultSystemPromptId) }
+            .map { Defaults(it.defaultParams, it.defaultSystemPromptId, it.activeProvider, it.providersWithKey) }
             .distinctUntilChanged()
             .catch { emit(Defaults(AppDefaults.GEN_PARAMS, null)) }
             .onStart { emit(Defaults(AppDefaults.GEN_PARAMS, null)) }
@@ -216,10 +240,17 @@ class ChatViewModel(
         val generating: Boolean,
     )
 
-    private data class Defaults(val params: GenParams, val promptId: String?)
+    private data class Defaults(
+        val params: GenParams,
+        val promptId: String?,
+        val activeProvider: Provider = Provider.FIREWORKS,
+        val providersWithKey: Set<Provider> = emptySet(),
+    )
+
+    private data class ModelLists(val active: List<ModelInfo>, val owner: List<ModelInfo>, val plan: PlanInfo?)
 
     private data class Extras(
-        val models: List<ModelInfo>,
+        val models: ModelLists,
         val prompts: List<SystemPrompt>,
         val localParams: GenParams?,
         val thinking: Map<String, ThinkingMode>,
@@ -235,8 +266,11 @@ class ChatViewModel(
                 loaded = c.meta.ready,
                 title = "",
                 modelId = d.modelId,
-                modelAvailable = d.modelId == null || e.models.isEmpty() || e.models.any { it.id == d.modelId },
-                models = e.models,
+                modelAvailable = d.modelId == null || e.models.owner.isEmpty() || e.models.owner.any { it.id == d.modelId },
+                models = e.models.active,
+                activeProvider = defaults.activeProvider,
+                providersWithKey = defaults.providersWithKey,
+                plan = e.models.plan,
                 prompts = e.prompts,
                 selectedPromptId = d.prompt?.id,
                 promptName = d.prompt?.name,
@@ -260,8 +294,11 @@ class ChatViewModel(
             notFound = c.load is ChatLoad.Loaded && chat == null && !failed,
             title = chat?.title.orEmpty(),
             modelId = chat?.modelId,
-            modelAvailable = chat == null || e.models.isEmpty() || e.models.any { it.id == chat.modelId },
-            models = e.models,
+            modelAvailable = chat == null || e.models.owner.isEmpty() || e.models.owner.any { it.id == chat.modelId },
+            models = e.models.active,
+            activeProvider = defaults.activeProvider,
+            providersWithKey = defaults.providersWithKey,
+            plan = e.models.plan,
             prompts = e.prompts,
             promptName = chat?.systemPromptName,
             promptText = chat?.systemPromptText,
@@ -287,6 +324,19 @@ class ChatViewModel(
                     if (first != null && draft.value.modelId == null) draft.update { it.copy(modelId = first) }
                 }
             }
+            // Le brouillon suit le fournisseur actif: si on change de mode (depuis le sélecteur), son modèle passe
+            // au modèle par défaut de ce fournisseur (sinon le premier de sa liste).
+            viewModelScope.launch {
+                settings.settings.catch { }.map { it.activeProvider }.distinctUntilChanged().collect { active ->
+                    val current = draft.value.modelId?.let { Provider.fromModelId(it) }
+                    if (current != null && current != active) {
+                        val s = settings.settings.first()
+                        val next = s.defaultModelIds[active]
+                            ?: models.modelsFor(active).first().firstOrNull()?.id
+                        draft.update { it.copy(modelId = next) }
+                    }
+                }
+            }
         }
         viewModelScope.launch {
             // Quand les réglages reflètent les paramètres locaux, on cesse de les superposer.
@@ -302,7 +352,7 @@ class ChatViewModel(
             val prompt = s.defaultSystemPromptId?.let { prompts.get(it) }
             val first = models.models.first().firstOrNull()?.id
             draft.value = ChatDraft(
-                modelId = s.defaultModelId ?: first,
+                modelId = s.defaultModelIds[s.activeProvider] ?: s.defaultModelId ?: first,
                 prompt = prompt,
                 params = s.defaultParams,
             )
@@ -482,8 +532,15 @@ class ChatViewModel(
         eventChannel.trySend(ChatUiEvent.CopyText(text, "Conversation copiée"))
     }
 
+    /** Mode actif (segment du sélecteur de modèle). Le brouillon suit; un chat existant garde son modèle. */
+    fun setActiveProvider(provider: Provider) {
+        scope.launch { runCatchingNotice { settings.setActiveProvider(provider) } }
+    }
+
     /** Modèle: brouillon = en mémoire; chat existant = `updateChatSettings`. Toujours modifiable. */
     fun setModel(modelId: String) {
+        // Verrouillé ou hors plan: autorisé, mais on prévient (l'API renverra l'erreur détaillée).
+        modelWarning(state.value.models.firstOrNull { it.id == modelId })?.let { notice(it) }
         if (chatId == null) {
             draft.update { it.copy(modelId = modelId) }
         } else {
@@ -535,7 +592,18 @@ class ChatViewModel(
         }
     }
 
-    suspend fun refreshModels(): Result<Unit> = models.refresh()
+    suspend fun refreshModels(): Result<Unit> {
+        val provider = try {
+            settings.settings.first().activeProvider
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Provider.FIREWORKS
+        }
+        val result = models.refresh(provider)
+        if (result.isSuccess && provider == Provider.FEATHERLESS) runCatching { models.refreshPlan() }
+        return result
+    }
 
     // ------------------------------------------------------------------ utilitaires
 

@@ -20,6 +20,9 @@ import app.fwchat.domain.StreamingText
 import app.fwchat.domain.SystemPrompt
 import app.fwchat.domain.SystemPromptRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -28,6 +31,14 @@ import kotlinx.coroutines.flow.map
 
 fun summary(id: String, title: String = id, updatedAt: Long = 0, count: Int = 2, model: String = "accounts/fireworks/models/glm-5p3") =
     ChatSummary(id, title, model, updatedAt, count)
+
+fun flModel(
+    id: String, gated: Boolean = false, availableOnPlan: Boolean? = true, concurrencyCost: Int? = 1,
+    context: Int = 32768, vision: Boolean = false,
+) = ModelInfo(
+    id = id, displayName = id.substringAfterLast('/'), contextLength = context, supportsImageInput = vision,
+    supportsTools = false, gated = gated, availableOnPlan = availableOnPlan, concurrencyCost = concurrencyCost,
+)
 
 fun model(id: String) = ModelInfo(
     id = "accounts/fireworks/models/$id", displayName = id, contextLength = 1000,
@@ -38,29 +49,66 @@ fun systemPrompt(id: String, name: String = id, text: String = "texte") =
     SystemPrompt(id, name, text, family = null, createdAt = 1, updatedAt = 1)
 
 class FakeSettingsRepo(
-    var key: String? = null,
+    key: String? = null,
     defaultModel: String? = null,
     defaultPrompt: String? = null,
 ) : SettingsRepository {
+    private val keys = mutableMapOf<Provider, String?>(Provider.FIREWORKS to key)
     private val state = MutableStateFlow(
         AppSettings(
             key != null, defaultModel, defaultPrompt, AppDefaults.GEN_PARAMS,
             providersWithKey = if (key != null) setOf(Provider.FIREWORKS) else emptySet(),
+            defaultModelIds = mapOf(Provider.FIREWORKS to defaultModel),
         ),
     )
     override val settings: Flow<AppSettings> = state
     val current: AppSettings get() = state.value
-    override suspend fun apiKey(provider: Provider): String? = if (provider == Provider.FIREWORKS) key else null
-    override suspend fun setApiKey(provider: Provider, key: String?) {
-        this.key = key
-        state.value = state.value.copy(
-            hasApiKey = key != null,
-            providersWithKey = if (key != null) setOf(Provider.FIREWORKS) else emptySet(),
+    /** Fournisseur actif (flux) pour piloter un [FakeModelRepo.follow]. */
+    val activeFlow: Flow<Provider> = state.map { it.activeProvider }
+
+    /** Clé Fireworks (compatibilité avec les tests existants). */
+    var key: String?
+        get() = keys[Provider.FIREWORKS]
+        set(v) { keys[Provider.FIREWORKS] = v; publish() }
+    fun keyOf(provider: Provider): String? = keys[provider]
+
+    /** Journal des appels `setActiveProvider` acceptés. */
+    val activations = mutableListOf<Provider>()
+
+    private fun publish() {
+        val withKey = Provider.entries.filter { keys[it] != null }.toSet()
+        val s = state.value
+        val active = when {
+            s.activeProvider in withKey || withKey.isEmpty() -> s.activeProvider
+            else -> withKey.first()
+        }
+        state.value = s.copy(
+            hasApiKey = withKey.isNotEmpty(), providersWithKey = withKey, activeProvider = active,
+            defaultModelId = s.defaultModelIds[active],
         )
     }
-    override suspend fun setActiveProvider(provider: Provider) { state.value = state.value.copy(activeProvider = provider) }
+
+    override suspend fun apiKey(provider: Provider): String? = keys[provider]
+    /** Même sémantique que le vrai dépôt: la clé devient active si l'actif n'en a pas; effacer l'actif bascule. */
+    override suspend fun setApiKey(provider: Provider, key: String?) {
+        keys[provider] = key
+        val s = state.value
+        if (key != null && keys[s.activeProvider] == null) {
+            state.value = s.copy(activeProvider = provider)
+        }
+        publish()
+    }
+    override suspend fun setActiveProvider(provider: Provider) {
+        val hasAny = Provider.entries.any { keys[it] != null }
+        if (keys[provider] == null && hasAny) return
+        activations += provider
+        val s = state.value
+        state.value = s.copy(activeProvider = provider, defaultModelId = s.defaultModelIds[provider])
+    }
     override suspend fun setDefaultModel(provider: Provider, modelId: String?) {
-        state.value = state.value.copy(defaultModelId = modelId)
+        val s = state.value
+        val ids = s.defaultModelIds + (provider to modelId)
+        state.value = s.copy(defaultModelIds = ids, defaultModelId = ids[s.activeProvider])
     }
     override suspend fun setDefaultSystemPrompt(promptId: String?) {
         state.value = state.value.copy(defaultSystemPromptId = promptId)
@@ -69,21 +117,54 @@ class FakeSettingsRepo(
 }
 
 class FakeModelRepo(
+    /** Liste Fireworks chargée par `refresh(FIREWORKS)`. */
     var list: List<ModelInfo> = emptyList(),
-    /** Résultat du prochain refresh; null = succès. */
+    /** Résultat des prochains refresh; null = succès. */
     var failure: Throwable? = null,
 ) : ModelRepository {
-    private val state = MutableStateFlow<List<ModelInfo>>(emptyList())
+    private val states = Provider.entries.associateWith { MutableStateFlow<List<ModelInfo>>(emptyList()) }
+    /** Listes chargées par `refresh(p)` pour chaque fournisseur (Fireworks = [list]). */
+    val lists = mutableMapOf<Provider, List<ModelInfo>>()
+    val failures = mutableMapOf<Provider, Throwable?>()
     var refreshCount = 0
-    override val models: Flow<List<ModelInfo>> = state
-    override fun modelsFor(provider: Provider): Flow<List<ModelInfo>> = state
-    override val plan: Flow<PlanInfo?> = MutableStateFlow(null)
-    override suspend fun refreshPlan(): Result<PlanInfo?> = Result.success(null)
+    val refreshed = mutableListOf<Provider>()
+    private var activeFlow: Flow<Provider> = flowOf(Provider.FIREWORKS)
+    private var activeNow: () -> Provider = { Provider.FIREWORKS }
+    val planState = MutableStateFlow<PlanInfo?>(null)
+    var planFailure: Throwable? = null
+    var planRefreshCount = 0
+
+    /** Suit le fournisseur actif d'un [FakeSettingsRepo] (à appeler avant de construire le ViewModel). */
+    fun follow(settings: FakeSettingsRepo): FakeModelRepo {
+        activeFlow = settings.activeFlow
+        activeNow = { settings.current.activeProvider }
+        return this
+    }
+
+    /** Remplit directement la liste d'un fournisseur (comme un cache déjà chargé). */
+    fun preload(provider: Provider, models: List<ModelInfo>) {
+        states.getValue(provider).value = models
+        lists[provider] = models
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override val models: Flow<List<ModelInfo>>
+        get() = activeFlow.distinctUntilChanged().flatMapLatest { states.getValue(it) }
+    override fun modelsFor(provider: Provider): Flow<List<ModelInfo>> = states.getValue(provider)
+    override val plan: Flow<PlanInfo?> get() = planState
+    override suspend fun refreshPlan(): Result<PlanInfo?> {
+        planRefreshCount++
+        planFailure?.let { return Result.failure(it) }
+        return Result.success(planState.value)
+    }
     override suspend fun refreshIfStale(provider: Provider, maxAgeMs: Long): Result<Unit> = refresh(provider)
     override suspend fun refresh(provider: Provider?): Result<Unit> {
+        val p = provider ?: activeNow()
         refreshCount++
-        failure?.let { return Result.failure(it) }
-        state.value = list
+        refreshed += p
+        (failures[p] ?: failure)?.let { return Result.failure(it) }
+        val loaded = if (p == Provider.FIREWORKS) lists[p] ?: list else lists[p] ?: emptyList()
+        states.getValue(p).value = loaded
         return Result.success(Unit)
     }
 }
