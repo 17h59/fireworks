@@ -1,6 +1,7 @@
 package app.fwchat.ui.settings
 
 import app.cash.turbine.test
+import app.fwchat.data.net.toUserMessage
 import app.fwchat.domain.Chat
 import app.fwchat.domain.ChatRepository
 import app.fwchat.domain.ChatSummary
@@ -10,11 +11,14 @@ import app.fwchat.domain.Message
 import app.fwchat.domain.MessageStatus
 import app.fwchat.domain.ModelInfo
 import app.fwchat.domain.ModelRepository
+import app.fwchat.domain.PlanInfo
+import app.fwchat.domain.Provider
 import app.fwchat.domain.SystemPrompt
 import app.fwchat.domain.ThreadItem
 import app.fwchat.ui.FakeModelRepo
 import app.fwchat.ui.FakePromptRepo
 import app.fwchat.ui.FakeSettingsRepo
+import app.fwchat.ui.flModel
 import app.fwchat.ui.model
 import app.fwchat.ui.systemPrompt
 import kotlinx.coroutines.CoroutineScope
@@ -110,10 +114,11 @@ class SettingsViewModelTest {
         key: String? = "fw_ancienne_cle_1234",
         defaultModel: String? = null,
         defaultPrompt: String? = null,
-        models: ModelRepository = FakeModelRepo(listOf(model("glm-5p3-flash"), model("kimi-k3"))),
+        models: ModelRepository? = null,
         prompts: List<SystemPrompt> = emptyList(),
     ): Env {
         val settings = FakeSettingsRepo(key = key, defaultModel = defaultModel, defaultPrompt = defaultPrompt)
+        val models = models ?: FakeModelRepo(listOf(model("glm-5p3-flash"), model("kimi-k3"))).follow(settings)
         val promptRepo = FakePromptRepo(prompts)
         val backup = FakeBackupRepo()
         val vm = SettingsViewModel(settings, models, promptRepo, backup, CoroutineScope(dispatcher))
@@ -129,7 +134,7 @@ class SettingsViewModelTest {
         val s = e.vm.state.value
         assertTrue(s.loaded)
         assertTrue(s.hasApiKey)
-        assertEquals("••••1234", s.keyHint)
+        assertEquals("••••1234", s.keyHints[Provider.FIREWORKS])
         assertEquals(e.settings.current.defaultParams, s.params)
     }
 
@@ -138,7 +143,7 @@ class SettingsViewModelTest {
         val e = env()
         advanceUntilIdle()
         e.vm.events.test {
-            e.vm.replaceKey("  fw_nouvelle_cle_9876  ")
+            e.vm.replaceKey(Provider.FIREWORKS, "  fw_nouvelle_cle_9876  ")
             advanceUntilIdle()
             assertEquals(SettingsEvent.KeyReplaced, awaitItem())
             assertTrue(awaitItem() is SettingsEvent.Message)
@@ -147,7 +152,7 @@ class SettingsViewModelTest {
         assertEquals("fw_nouvelle_cle_9876", e.settings.key)
         assertEquals(1, (e.models as FakeModelRepo).refreshCount)
         val s = e.vm.state.value
-        assertEquals("••••9876", s.keyHint)
+        assertEquals("••••9876", s.keyHints[Provider.FIREWORKS])
         assertFalse(s.validatingKey)
         assertNull(s.keyError)
     }
@@ -156,7 +161,7 @@ class SettingsViewModelTest {
     fun `remplacement de cle reussi choisit un modele par defaut si absent`() = runTest(dispatcher) {
         val e = env(defaultModel = null)
         advanceUntilIdle()
-        e.vm.replaceKey("fw_nouvelle_cle_9876")
+        e.vm.replaceKey(Provider.FIREWORKS, "fw_nouvelle_cle_9876")
         advanceUntilIdle()
         assertEquals("accounts/fireworks/models/glm-5p3-flash", e.settings.current.defaultModelId)
     }
@@ -165,15 +170,16 @@ class SettingsViewModelTest {
     fun `remplacement de cle refuse restaure l ancienne cle et affiche l erreur`() = runTest(dispatcher) {
         val repo = FakeModelRepo(failure = FireworksException.Unauthorized("401"))
         val e = env(models = repo)
+        assertTrue(describeNetworkError(FireworksException.Unauthorized("x")).contains("Fireworks"))
         advanceUntilIdle()
-        e.vm.replaceKey("fw_mauvaise_cle")
+        e.vm.replaceKey(Provider.FIREWORKS, "fw_mauvaise_cle")
         advanceUntilIdle()
         assertEquals("fw_ancienne_cle_1234", e.settings.key)
         assertTrue(e.settings.current.hasApiKey)
         val s = e.vm.state.value
         assertEquals(describeNetworkError(FireworksException.Unauthorized("x")), s.keyError)
         assertFalse(s.validatingKey)
-        assertEquals("••••1234", s.keyHint)
+        assertEquals("••••1234", s.keyHints[Provider.FIREWORKS])
         e.vm.events.test { expectNoEvents() }
     }
 
@@ -182,7 +188,7 @@ class SettingsViewModelTest {
         val repo = FakeModelRepo(failure = FireworksException.Network(IOException("hors ligne")))
         val e = env(models = repo)
         advanceUntilIdle()
-        e.vm.replaceKey("fw_autre_cle_0000")
+        e.vm.replaceKey(Provider.FIREWORKS, "fw_autre_cle_0000")
         advanceUntilIdle()
         assertEquals("fw_ancienne_cle_1234", e.settings.key)
         assertEquals(describeNetworkError(IOException()), e.vm.state.value.keyError)
@@ -192,7 +198,7 @@ class SettingsViewModelTest {
     fun `remplacement de cle avec exception levee restaure l ancienne cle`() = runTest(dispatcher) {
         val e = env(models = ThrowingModelRepo(IllegalStateException("boom")))
         advanceUntilIdle()
-        e.vm.replaceKey("fw_autre_cle_0000")
+        e.vm.replaceKey(Provider.FIREWORKS, "fw_autre_cle_0000")
         advanceUntilIdle()
         assertEquals("fw_ancienne_cle_1234", e.settings.key)
         assertNotNull(e.vm.state.value.keyError)
@@ -203,7 +209,7 @@ class SettingsViewModelTest {
     fun `remplacement avec une cle vide ne touche a rien`() = runTest(dispatcher) {
         val e = env()
         advanceUntilIdle()
-        e.vm.replaceKey("   ")
+        e.vm.replaceKey(Provider.FIREWORKS, "   ")
         advanceUntilIdle()
         assertNotNull(e.vm.state.value.keyError)
         assertEquals("fw_ancienne_cle_1234", e.settings.key)
@@ -218,14 +224,271 @@ class SettingsViewModelTest {
         val e = env()
         advanceUntilIdle()
         e.vm.events.test {
-            e.vm.removeKey()
+            e.vm.removeKey(Provider.FIREWORKS)
             advanceUntilIdle()
             assertEquals(SettingsEvent.ApiKeyRemoved, awaitItem())
             cancelAndIgnoreRemainingEvents()
         }
         assertNull(e.settings.key)
         assertFalse(e.vm.state.value.hasApiKey)
-        assertNull(e.vm.state.value.keyHint)
+        assertNull(e.vm.state.value.keyHints[Provider.FIREWORKS])
+    }
+
+    // ------------------------------------------------------------------ deux fournisseurs
+
+    private val fw = Provider.FIREWORKS
+    private val fl = Provider.FEATHERLESS
+
+    /** Environnement avec une clé Fireworks ET une clé Featherless (Fireworks actif). */
+    private suspend fun TestScope.twoKeys(): Env {
+        val e = env()
+        advanceUntilIdle()
+        e.settings.setApiKey(fl, "fl_cle_featherless_5678")
+        val repo = e.models as FakeModelRepo
+        repo.lists[fl] = listOf(flModel("Qwen/Qwen3-8B"), flModel("aaa/gros", concurrencyCost = 4))
+        repo.planState.value = PlanInfo("Premium", 32768, 4, null)
+        advanceUntilIdle()
+        return e
+    }
+
+    @Test
+    fun `etat expose le mode actif les cles et les indices des deux fournisseurs`() = runTest(dispatcher) {
+        val e = twoKeys()
+        val s = e.vm.state.value
+        assertEquals(fw, s.activeProvider)
+        assertEquals(setOf(fw, fl), s.providersWithKey)
+        assertEquals("••••1234", s.keyHints[fw])
+        assertEquals("••••5678", s.keyHints[fl])
+    }
+
+    @Test
+    fun `changer de mode bascule le fournisseur actif et la liste de modeles`() = runTest(dispatcher) {
+        val e = twoKeys()
+        e.vm.selectProvider(fl)
+        advanceUntilIdle()
+        assertEquals(fl, e.settings.current.activeProvider)
+        assertEquals(fl, e.vm.state.value.activeProvider)
+        e.vm.refreshModels()
+        advanceUntilIdle()
+        assertEquals(listOf("Qwen/Qwen3-8B", "aaa/gros"), e.vm.state.value.models.map { it.id })
+        e.vm.selectProvider(fw)
+        advanceUntilIdle()
+        assertEquals(fw, e.vm.state.value.activeProvider)
+    }
+
+    @Test
+    fun `choisir un fournisseur sans cle ne change pas de mode`() = runTest(dispatcher) {
+        val e = env()
+        advanceUntilIdle()
+        e.vm.selectProvider(fl)
+        advanceUntilIdle()
+        assertEquals(fw, e.settings.current.activeProvider)
+        assertTrue(e.settings.activations.isEmpty())
+    }
+
+    @Test
+    fun `le plan Featherless est charge a l entree en mode Featherless`() = runTest(dispatcher) {
+        val e = twoKeys()
+        val repo = e.models as FakeModelRepo
+        assertEquals(0, repo.planRefreshCount)
+        e.vm.selectProvider(fl)
+        advanceUntilIdle()
+        assertEquals(1, repo.planRefreshCount)
+        val s = e.vm.state.value
+        assertEquals("Premium", s.plan?.name)
+        assertFalse(s.planLoading)
+        assertNull(s.planError)
+    }
+
+    @Test
+    fun `erreur de plan est lisible et rechargeable`() = runTest(dispatcher) {
+        val e = twoKeys()
+        val repo = e.models as FakeModelRepo
+        repo.planFailure = FireworksException.Network(IOException("off"))
+        e.vm.selectProvider(fl)
+        advanceUntilIdle()
+        assertEquals(describeNetworkError(IOException(), fl), e.vm.state.value.planError)
+        assertTrue(e.vm.state.value.planError!!.contains("Featherless"))
+        repo.planFailure = null
+        e.vm.loadPlan()
+        advanceUntilIdle()
+        assertNull(e.vm.state.value.planError)
+        assertEquals(2, repo.planRefreshCount)
+    }
+
+    @Test
+    fun `ajout d une cle Featherless valide l active et choisit un modele`() = runTest(dispatcher) {
+        val e = env()
+        advanceUntilIdle()
+        val repo = e.models as FakeModelRepo
+        repo.lists[fl] = listOf(flModel("Qwen/Qwen3-8B"))
+        e.vm.events.test {
+            e.vm.replaceKey(fl, "  fl_nouvelle_cle_0001  ")
+            advanceUntilIdle()
+            assertEquals(SettingsEvent.KeyReplaced, awaitItem())
+            val msg = awaitItem() as SettingsEvent.Message
+            assertEquals("Clé Featherless enregistrée : Featherless l'a acceptée. Mode Featherless activé.", msg.text)
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertEquals("fl_nouvelle_cle_0001", e.settings.keyOf(fl))
+        assertEquals("fw_ancienne_cle_1234", e.settings.key)
+        assertEquals(fl, e.settings.current.activeProvider)
+        assertEquals("Qwen/Qwen3-8B", e.settings.current.defaultModelIds[fl])
+        assertEquals("••••0001".length, e.vm.state.value.keyHints[fl]!!.length)
+    }
+
+    @Test
+    fun `ajout d une cle Featherless refusee nettoie sans toucher a Fireworks`() = runTest(dispatcher) {
+        val e = env()
+        advanceUntilIdle()
+        (e.models as FakeModelRepo).failures[fl] = FireworksException.Unauthorized("401")
+        e.vm.replaceKey(fl, "fl_mauvaise")
+        advanceUntilIdle()
+        assertNull(e.settings.keyOf(fl))
+        assertEquals("fw_ancienne_cle_1234", e.settings.key)
+        assertEquals(fw, e.settings.current.activeProvider)
+        val s = e.vm.state.value
+        assertEquals(fl, s.keyProvider)
+        assertEquals(describeNetworkError(FireworksException.Unauthorized("x"), fl), s.keyError)
+        assertTrue(s.keyError!!.contains("Featherless"))
+        assertFalse(s.validatingKey)
+    }
+
+    @Test
+    fun `remplacement refuse de la cle Featherless restaure l ancienne`() = runTest(dispatcher) {
+        val e = twoKeys()
+        (e.models as FakeModelRepo).failures[fl] = FireworksException.Unauthorized("401")
+        e.vm.replaceKey(fl, "fl_mauvaise")
+        advanceUntilIdle()
+        assertEquals("fl_cle_featherless_5678", e.settings.keyOf(fl))
+        assertEquals(fw, e.settings.current.activeProvider)
+    }
+
+    @Test
+    fun `supprimer la cle du fournisseur actif bascule sur l autre`() = runTest(dispatcher) {
+        val e = twoKeys()
+        e.vm.events.test {
+            e.vm.removeKey(fw)
+            advanceUntilIdle()
+            val msg = awaitItem() as SettingsEvent.Message
+            assertEquals("Clé Fireworks supprimée. Mode Featherless activé.", msg.text)
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertNull(e.settings.key)
+        assertEquals(fl, e.settings.current.activeProvider)
+        assertTrue(e.settings.current.hasApiKey)
+        assertEquals(setOf(fl), e.vm.state.value.providersWithKey)
+    }
+
+    @Test
+    fun `supprimer la cle de l autre fournisseur garde le mode actif`() = runTest(dispatcher) {
+        val e = twoKeys()
+        e.vm.events.test {
+            e.vm.removeKey(fl)
+            advanceUntilIdle()
+            val msg = awaitItem() as SettingsEvent.Message
+            assertEquals("Clé Featherless supprimée.", msg.text)
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertNull(e.settings.keyOf(fl))
+        assertEquals(fw, e.settings.current.activeProvider)
+    }
+
+    @Test
+    fun `supprimer la derniere cle renvoie a l onboarding`() = runTest(dispatcher) {
+        val e = twoKeys()
+        e.vm.removeKey(fl)
+        advanceUntilIdle()
+        e.vm.events.test {
+            assertTrue(awaitItem() is SettingsEvent.Message) // « Clé Featherless supprimée. »
+            e.vm.removeKey(fw)
+            advanceUntilIdle()
+            assertEquals(SettingsEvent.ApiKeyRemoved, awaitItem())
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertFalse(e.settings.current.hasApiKey)
+    }
+
+    @Test
+    fun `le modele par defaut est celui du fournisseur actif`() = runTest(dispatcher) {
+        val e = twoKeys()
+        e.vm.setDefaultModel("accounts/fireworks/models/kimi-k3")
+        advanceUntilIdle()
+        e.vm.selectProvider(fl)
+        advanceUntilIdle()
+        e.vm.setDefaultModel("Qwen/Qwen3-8B")
+        advanceUntilIdle()
+        assertEquals("accounts/fireworks/models/kimi-k3", e.settings.current.defaultModelIds[fw])
+        assertEquals("Qwen/Qwen3-8B", e.settings.current.defaultModelIds[fl])
+        assertEquals("Qwen/Qwen3-8B", e.vm.state.value.defaultModelId)
+        e.vm.selectProvider(fw)
+        advanceUntilIdle()
+        assertEquals("accounts/fireworks/models/kimi-k3", e.vm.state.value.defaultModelId)
+    }
+
+    @Test
+    fun `choisir un modele verrouille par defaut previent`() = runTest(dispatcher) {
+        val e = twoKeys()
+        (e.models as FakeModelRepo).preload(fl, listOf(flModel("meta/secret", gated = true), flModel("a/b", availableOnPlan = false)))
+        e.vm.selectProvider(fl)
+        advanceUntilIdle()
+        e.vm.events.test {
+            e.vm.setDefaultModel("meta/secret")
+            advanceUntilIdle()
+            assertTrue((awaitItem() as SettingsEvent.Message).text.contains("verrouillé"))
+            e.vm.setDefaultModel("a/b")
+            advanceUntilIdle()
+            assertTrue((awaitItem() as SettingsEvent.Message).text.contains("hors de ton plan"))
+            cancelAndIgnoreRemainingEvents()
+        }
+        assertEquals("a/b", e.settings.current.defaultModelId)
+    }
+
+    @Test
+    fun `le rechargement concerne le fournisseur actif`() = runTest(dispatcher) {
+        val e = twoKeys()
+        val repo = e.models as FakeModelRepo
+        e.vm.selectProvider(fl)
+        advanceUntilIdle()
+        e.vm.refreshModels()
+        advanceUntilIdle()
+        assertEquals(listOf(fl), repo.refreshed)
+    }
+
+    @Test
+    fun `describeNetworkError nomme le bon fournisseur`() {
+        assertTrue(describeNetworkError(IOException(), fl).contains("Featherless"))
+        assertTrue(describeNetworkError(FireworksException.Http(500, ""), fw).startsWith("Fireworks"))
+        assertEquals(
+            FireworksException.ModelGated("https://x", "m").toUserMessage(),
+            describeNetworkError(FireworksException.ModelGated("https://x", "m"), fl),
+        )
+        assertTrue(describeNetworkError(FireworksException.RateLimited("c", null, concurrency = true), fl).contains("concurrence"))
+    }
+
+    @Test
+    fun `resume de plan et etat des cles`() {
+        assertEquals(
+            "Premium · concurrence 4 · contexte max 32k",
+            planSummary(PlanInfo("Premium", 32768, 4, null)),
+        )
+        assertEquals("Plan Featherless", planSummary(PlanInfo("", null, null, null)))
+        assertEquals("Enregistrée ••••1234 · mode actif", keyStatusLabel(true, "••••1234", true))
+        assertEquals("Enregistrée ••••1234", keyStatusLabel(true, "••••1234", false))
+        assertEquals("Absente", keyStatusLabel(false, null, false))
+        assertEquals("Clé Featherless", keyTitle(fl))
+        assertEquals("12", formatCredits(12.0))
+        assertEquals("12,50", formatCredits(12.5))
+    }
+
+    @Test
+    fun `consequence de la suppression d une cle`() {
+        assertEquals(
+            "Le mode Featherless sera activé.",
+            removeKeyConsequence(fw, fw, setOf(fw, fl)),
+        )
+        assertEquals("Le mode Fireworks reste actif.", removeKeyConsequence(fl, fw, setOf(fw, fl)))
+        assertTrue(removeKeyConsequence(fw, fw, setOf(fw)).contains("saisir une clé"))
     }
 
     @Test

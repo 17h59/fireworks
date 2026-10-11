@@ -17,13 +17,13 @@ class GenParamsLogicTest {
         assertFalse(GenParamsLogic.supportsNoReasoning("accounts/fireworks/models/gpt-oss-120b"))
         assertTrue(GenParamsLogic.supportsNoReasoning("accounts/fireworks/models/kimi-k3"))
         assertTrue(GenParamsLogic.supportsNoReasoning(null))
-        assertFalse(ReasoningEffort.NONE in GenParamsLogic.reasoningOptions("glm-5p3-flash"))
-        assertTrue(ReasoningEffort.NONE in GenParamsLogic.reasoningOptions("kimi-k3"))
+        assertFalse(ReasoningEffort.NONE in GenParamsLogic.reasoningOptions("accounts/fireworks/models/glm-5p3-flash"))
+        assertTrue(ReasoningEffort.NONE in GenParamsLogic.reasoningOptions("accounts/fireworks/models/kimi-k3"))
     }
 
     @Test
     fun optionsDeRaisonnementCommencentParDefaut() {
-        val o = GenParamsLogic.reasoningOptions("kimi-k3")
+        val o = GenParamsLogic.reasoningOptions("accounts/fireworks/models/kimi-k3")
         assertNull(o.first())
         assertEquals(listOf(null, ReasoningEffort.NONE, ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH, ReasoningEffort.MAX), o)
         assertEquals("Défaut", GenParamsLogic.reasoningLabel(null))
@@ -65,13 +65,99 @@ class GenParamsLogicTest {
     }
 
     @Test
+    fun aucunToujoursProposePourFeatherless() {
+        // Même pour une famille GLM / gpt-oss: la restriction ne vaut que pour Fireworks.
+        assertTrue(GenParamsLogic.supportsNoReasoning("zai-org/GLM-4.5"))
+        assertTrue(GenParamsLogic.supportsNoReasoning("openai/gpt-oss-120b"))
+        assertTrue(ReasoningEffort.NONE in GenParamsLogic.reasoningOptions("zai-org/GLM-4.5"))
+        val ignored = GenParams(reasoningEffort = ReasoningEffort.NONE)
+        assertFalse(GenParamsLogic.noReasoningIgnored(ignored, "zai-org/GLM-4.5"))
+        assertTrue(GenParamsLogic.noReasoningIgnored(ignored, "accounts/fireworks/models/glm-5p3"))
+    }
+
+    @Test
+    fun aideDeRaisonnementSeulementPourFeatherless() {
+        val hint = GenParamsLogic.featherlessReasoningHint("Qwen/Qwen3-8B")
+        assertTrue(hint!!.startsWith("Pour Featherless, seul « Aucun » agit"))
+        assertNull(GenParamsLogic.featherlessReasoningHint("accounts/fireworks/models/kimi-k3"))
+        assertNull(GenParamsLogic.featherlessReasoningHint(null))
+    }
+
+    private fun fl(id: String, name: String = id.substringAfterLast('/')) = ModelInfo(id, name, 0, false, false)
+
+    @Test
     fun filtreDesModeles() {
         fun m(id: String, name: String) = ModelInfo("accounts/fireworks/models/$id", name, 0, false, false)
         val list = listOf(m("glm-5p3", "GLM 5.3"), m("kimi-k3", "Kimi K3"))
-        assertEquals(list, filterModels(list, "  "))
-        assertEquals(listOf(list[0]), filterModels(list, "GLM"))
-        assertEquals(listOf(list[1]), filterModels(list, "kimi"))
-        assertTrue(filterModels(list, "zzz").isEmpty())
+        assertEquals(list, pageModels(list, "  ").items)
+        assertEquals(listOf(list[0]), pageModels(list, "GLM").items)
+        assertEquals(listOf(list[1]), pageModels(list, "kimi").items)
+        assertTrue(pageModels(list, "zzz").items.isEmpty())
+    }
+
+    @Test
+    fun filtreAvecPlusieursMotsDansLIdOuLeNom() {
+        val list = listOf(fl("Qwen/Qwen3-8B"), fl("meta-llama/Llama-3.1-8B-Instruct"), fl("Qwen/Qwen3-32B"))
+        assertEquals(listOf(list[0]), pageModels(list, "qwen 8b").items)
+        assertEquals(listOf(list[1]), pageModels(list, "META llama instruct").items)
+        assertEquals(2, pageModels(list, "qwen").total)
+    }
+
+    @Test
+    fun listeLimiteA200AvecLeTotalExact() {
+        val big = (1..7500).map { fl("org$it/modele-$it") }
+        val all = pageModels(big, "")
+        assertEquals(MODEL_LIST_LIMIT, all.items.size)
+        assertEquals(7500, all.total)
+        assertTrue(all.truncated)
+        // L'ordre du dépôt est conservé.
+        assertEquals(big.take(MODEL_LIST_LIMIT), all.items)
+
+        val some = pageModels(big, "modele-1")
+        assertEquals(MODEL_LIST_LIMIT, some.items.size)
+        assertEquals(1111, some.total) // 1, 10..19, 100..199, 1000..1999
+        assertTrue(some.truncated)
+
+        val few = pageModels(big, "modele-7499")
+        assertEquals(1, few.items.size)
+        assertFalse(few.truncated)
+    }
+
+    @Test
+    fun recherchePerformanteSur7500Modeles() {
+        val big = (1..7500).map { fl("org$it/modele-$it") }
+        val start = System.nanoTime()
+        repeat(20) { pageModels(big, "modele 9") }
+        val ms = (System.nanoTime() - start) / 1_000_000
+        assertTrue("20 recherches en $ms ms", ms < 2000)
+    }
+
+    @Test
+    fun sousTexteOrganisationEtContexteEffectif() {
+        val plan = app.fwchat.domain.PlanInfo("Premium", 32768, 4, null)
+        val big = ModelInfo("Qwen/Qwen3-32B", "Qwen3-32B", 131072, false, false, availableOnPlan = true, concurrencyCost = 2)
+        assertEquals("Qwen · Contexte 32k", modelSubtitle(big, plan))
+        assertEquals("Qwen · Contexte 128k", modelSubtitle(big, null))
+        val fw = ModelInfo("accounts/fireworks/models/kimi-k3", "kimi", 262144, false, false)
+        assertEquals("Contexte 256k", modelSubtitle(fw, plan))
+        assertNull(modelOrg(fw))
+        assertEquals("Qwen", modelOrg(big))
+    }
+
+    @Test
+    fun avertissementPourModeleVerrouilleOuHorsPlan() {
+        assertNull(modelWarning(null))
+        assertNull(modelWarning(fl("a/b")))
+        assertTrue(modelWarning(ModelInfo("a/b", "b", 0, false, false, gated = true))!!.contains("HuggingFace"))
+        assertTrue(modelWarning(ModelInfo("a/b", "b", 0, false, false, availableOnPlan = false))!!.contains("hors de ton plan"))
+        assertNull(modelWarning(ModelInfo("a/b", "b", 0, false, false, availableOnPlan = true)))
+    }
+
+    @Test
+    fun descriptionAccessibleDesSegments() {
+        assertEquals("Fireworks, sélectionné", providerSegmentDescription(app.fwchat.domain.Provider.FIREWORKS, true, true))
+        assertEquals("Featherless, sans clé", providerSegmentDescription(app.fwchat.domain.Provider.FEATHERLESS, false, false))
+        assertEquals("Featherless", providerSegmentDescription(app.fwchat.domain.Provider.FEATHERLESS, false, true))
     }
 
     @Test
