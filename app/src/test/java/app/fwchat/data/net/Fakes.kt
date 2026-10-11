@@ -8,7 +8,9 @@ import app.fwchat.domain.Chat
 import app.fwchat.domain.ChatRepository
 import app.fwchat.domain.ChatRequest
 import app.fwchat.domain.ChatSummary
-import app.fwchat.domain.FireworksApi
+import app.fwchat.domain.ChatApi
+import app.fwchat.domain.PlanInfo
+import app.fwchat.domain.Provider
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.Message
 import app.fwchat.domain.MessageStatus
@@ -35,20 +37,44 @@ class InMemorySecretStore(var value: String? = null) : SecretStore {
     override suspend fun write(secret: String?) { writes++; value = secret; unreadable = false }
 }
 
-class FakeSettings(var key: String? = "fw_test_key") : SettingsRepository {
-    private val state = MutableStateFlow(AppSettings(key != null, null, null, AppDefaults.GEN_PARAMS))
+class FakeSettings(
+    key: String? = "fw_test_key",
+    flKey: String? = null,
+    active: Provider = Provider.FIREWORKS,
+) : SettingsRepository {
+    private val keys = mutableMapOf(Provider.FIREWORKS to key, Provider.FEATHERLESS to flKey)
+    private val state = MutableStateFlow(snapshot(active, AppDefaults.GEN_PARAMS))
+    /** Clé Fireworks (compat des anciens tests). */
+    var key: String?
+        get() = keys[Provider.FIREWORKS]
+        set(v) { keys[Provider.FIREWORKS] = v; state.value = snapshot(state.value.activeProvider, state.value.defaultParams) }
+
+    private fun snapshot(active: Provider, params: GenParams): AppSettings {
+        val withKey = Provider.entries.filter { !keys[it].isNullOrBlank() }.toSet()
+        return AppSettings(withKey.isNotEmpty(), null, null, params, active, withKey)
+    }
+
     override val settings: Flow<AppSettings> = state
-    override suspend fun apiKey(): String? = key
-    override suspend fun setApiKey(key: String?) { this.key = key }
-    override suspend fun setDefaultModel(modelId: String?) = Unit
+    override suspend fun apiKey(provider: Provider): String? = keys[provider]
+    override suspend fun setApiKey(provider: Provider, key: String?) {
+        keys[provider] = key
+        state.value = snapshot(state.value.activeProvider, state.value.defaultParams)
+    }
+    override suspend fun setActiveProvider(provider: Provider) { state.value = snapshot(provider, state.value.defaultParams) }
+    override suspend fun setDefaultModel(provider: Provider, modelId: String?) = Unit
     override suspend fun setDefaultSystemPrompt(promptId: String?) = Unit
     override suspend fun setDefaultParams(params: GenParams) { state.value = state.value.copy(defaultParams = params) }
 }
 
 class FakeModelRepository : ModelRepository {
     var refreshCount = 0
+    val refreshed = mutableListOf<Provider?>()
     override val models: Flow<List<ModelInfo>> = MutableStateFlow(emptyList())
-    override suspend fun refresh(): Result<Unit> { refreshCount++; return Result.success(Unit) }
+    override fun modelsFor(provider: Provider): Flow<List<ModelInfo>> = models
+    override val plan: Flow<PlanInfo?> = MutableStateFlow(null)
+    override suspend fun refresh(provider: Provider?): Result<Unit> { refreshCount++; refreshed += provider; return Result.success(Unit) }
+    override suspend fun refreshPlan(): Result<PlanInfo?> = Result.success(null)
+    override suspend fun refreshIfStale(provider: Provider, maxAgeMs: Long): Result<Unit> = refresh(provider)
 }
 
 class InMemoryModelCache(var stored: List<ModelInfo>? = null) : ModelCache {
@@ -58,7 +84,10 @@ class InMemoryModelCache(var stored: List<ModelInfo>? = null) : ModelCache {
 }
 
 /** API scriptée: chaque appel de streamChat appelle [handler] et enregistre la requête. */
-class FakeFireworksApi : FireworksApi {
+class FakeChatApi(override val provider: Provider = Provider.FIREWORKS) : ChatApi {
+    var keys = mutableListOf<String>()
+    var planResult: PlanInfo? = null
+    override suspend fun plan(apiKey: String): PlanInfo? = planResult
     val requests = mutableListOf<ChatRequest>()
     var handler: (ChatRequest) -> Flow<StreamEvent> = { emptyFlow() }
     var models: List<ModelInfo> = emptyList()
@@ -73,6 +102,7 @@ class FakeFireworksApi : FireworksApi {
 
     override fun streamChat(apiKey: String, request: ChatRequest): Flow<StreamEvent> {
         requests += request
+        keys += apiKey
         return handler(request)
     }
 }

@@ -5,6 +5,8 @@ import app.fwchat.domain.FireworksException
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.MessageStatus
 import app.fwchat.domain.ReasoningEffort
+import app.fwchat.domain.Provider
+import app.fwchat.domain.ProviderApis
 import app.fwchat.domain.Role
 import app.fwchat.domain.StreamEvent
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -31,8 +33,12 @@ class ChatEngineImplTest {
         val chats = FakeChatRepository()
         val models = FakeModelRepository()
         val settings = FakeSettings()
-        val api = FakeFireworksApi()
-        val engine = ChatEngineImpl(chats, models, settings, api, test, awaitReady = awaitReady)
+        val api = FakeChatApi()
+        val flApi = FakeChatApi(Provider.FEATHERLESS)
+        val engine = ChatEngineImpl(
+            chats, models, settings, ProviderApis(mapOf(Provider.FIREWORKS to api, Provider.FEATHERLESS to flApi)), test,
+            awaitReady = awaitReady,
+        )
         val events = mutableListOf<EngineEvent>()
 
         init {

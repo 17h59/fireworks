@@ -10,6 +10,8 @@ import app.fwchat.domain.EngineEvent
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.Message
 import app.fwchat.domain.MessageStatus
+import app.fwchat.domain.PlanInfo
+import app.fwchat.domain.Provider
 import app.fwchat.domain.ModelInfo
 import app.fwchat.domain.ModelRepository
 import app.fwchat.domain.Role
@@ -41,16 +43,25 @@ class FakeSettingsRepo(
     defaultPrompt: String? = null,
 ) : SettingsRepository {
     private val state = MutableStateFlow(
-        AppSettings(key != null, defaultModel, defaultPrompt, AppDefaults.GEN_PARAMS),
+        AppSettings(
+            key != null, defaultModel, defaultPrompt, AppDefaults.GEN_PARAMS,
+            providersWithKey = if (key != null) setOf(Provider.FIREWORKS) else emptySet(),
+        ),
     )
     override val settings: Flow<AppSettings> = state
     val current: AppSettings get() = state.value
-    override suspend fun apiKey(): String? = key
-    override suspend fun setApiKey(key: String?) {
+    override suspend fun apiKey(provider: Provider): String? = if (provider == Provider.FIREWORKS) key else null
+    override suspend fun setApiKey(provider: Provider, key: String?) {
         this.key = key
-        state.value = state.value.copy(hasApiKey = key != null)
+        state.value = state.value.copy(
+            hasApiKey = key != null,
+            providersWithKey = if (key != null) setOf(Provider.FIREWORKS) else emptySet(),
+        )
     }
-    override suspend fun setDefaultModel(modelId: String?) { state.value = state.value.copy(defaultModelId = modelId) }
+    override suspend fun setActiveProvider(provider: Provider) { state.value = state.value.copy(activeProvider = provider) }
+    override suspend fun setDefaultModel(provider: Provider, modelId: String?) {
+        state.value = state.value.copy(defaultModelId = modelId)
+    }
     override suspend fun setDefaultSystemPrompt(promptId: String?) {
         state.value = state.value.copy(defaultSystemPromptId = promptId)
     }
@@ -65,7 +76,11 @@ class FakeModelRepo(
     private val state = MutableStateFlow<List<ModelInfo>>(emptyList())
     var refreshCount = 0
     override val models: Flow<List<ModelInfo>> = state
-    override suspend fun refresh(): Result<Unit> {
+    override fun modelsFor(provider: Provider): Flow<List<ModelInfo>> = state
+    override val plan: Flow<PlanInfo?> = MutableStateFlow(null)
+    override suspend fun refreshPlan(): Result<PlanInfo?> = Result.success(null)
+    override suspend fun refreshIfStale(provider: Provider, maxAgeMs: Long): Result<Unit> = refresh(provider)
+    override suspend fun refresh(provider: Provider?): Result<Unit> {
         refreshCount++
         failure?.let { return Result.failure(it) }
         state.value = list

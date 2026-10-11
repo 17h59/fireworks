@@ -83,7 +83,11 @@ private class FakeBackupRepo(
 /** refresh() qui lève une exception au lieu de renvoyer un Result.failure. */
 private class ThrowingModelRepo(private val error: Exception) : ModelRepository {
     override val models: Flow<List<ModelInfo>> = MutableStateFlow(emptyList())
-    override suspend fun refresh(): Result<Unit> = throw error
+    override fun modelsFor(provider: app.fwchat.domain.Provider): Flow<List<ModelInfo>> = models
+    override val plan: Flow<app.fwchat.domain.PlanInfo?> = MutableStateFlow(null)
+    override suspend fun refreshPlan(): Result<app.fwchat.domain.PlanInfo?> = throw error
+    override suspend fun refreshIfStale(provider: app.fwchat.domain.Provider, maxAgeMs: Long): Result<Unit> = throw error
+    override suspend fun refresh(provider: app.fwchat.domain.Provider?): Result<Unit> = throw error
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
