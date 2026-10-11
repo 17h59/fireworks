@@ -3,6 +3,7 @@ package app.fwchat.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.fwchat.domain.ChatRepository
+import app.fwchat.domain.activeApiKey
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.ModelInfo
 import app.fwchat.domain.ModelRepository
@@ -136,7 +137,7 @@ class SettingsViewModel(
 
     private suspend fun refreshKeyHint() {
         val hint = try {
-            maskApiKey(settings.apiKey())
+            maskApiKey(settings.activeApiKey())
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -168,8 +169,9 @@ class SettingsViewModel(
         }
         local.update { it.copy(validatingKey = true, keyError = null) }
         viewModelScope.launch {
+            val provider = settings.settings.first().activeProvider
             val old = try {
-                settings.apiKey()
+                settings.apiKey(provider)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -178,8 +180,8 @@ class SettingsViewModel(
             var success = false
             var failure: Throwable? = null
             try {
-                settings.setApiKey(key)
-                val result = models.refresh()
+                settings.setApiKey(provider, key)
+                val result = models.refresh(provider)
                 if (result.isSuccess) {
                     success = true
                 } else {
@@ -191,7 +193,7 @@ class SettingsViewModel(
                 failure = e
             } finally {
                 if (!success) {
-                    withContext(NonCancellable) { runCatching { settings.setApiKey(old) } }
+                    withContext(NonCancellable) { runCatching { settings.setApiKey(provider, old) } }
                 }
             }
             if (success) {
@@ -209,7 +211,7 @@ class SettingsViewModel(
     fun removeKey() {
         viewModelScope.launch {
             try {
-                settings.setApiKey(null)
+                settings.setApiKey(settings.settings.first().activeProvider, null)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -224,7 +226,7 @@ class SettingsViewModel(
     // ------------------------------------------------------------------ modèle et prompt par défaut
 
     fun setDefaultModel(modelId: String) {
-        viewModelScope.launch { settings.setDefaultModel(modelId) }
+        viewModelScope.launch { settings.setDefaultModel(settings.settings.first().activeProvider, modelId) }
     }
 
     fun setDefaultPrompt(promptId: String?) {

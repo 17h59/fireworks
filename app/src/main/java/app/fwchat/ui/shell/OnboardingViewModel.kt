@@ -26,9 +26,11 @@ fun pickDefaultModel(models: List<ModelInfo>): String? =
  */
 suspend fun applyDefaultModelIfNeeded(settings: SettingsRepository, models: ModelRepository) {
     val list = models.models.first()
-    val current = settings.settings.first().defaultModelId
+    val s = settings.settings.first()
+    val provider = s.activeProvider
+    val current = s.defaultModelId
     if (current != null && list.any { it.id == current }) return
-    pickDefaultModel(list)?.let { settings.setDefaultModel(it) }
+    pickDefaultModel(list)?.let { settings.setDefaultModel(provider, it) }
 }
 
 enum class OnboardingError { EMPTY_KEY, UNAUTHORIZED, NETWORK, OTHER }
@@ -63,19 +65,19 @@ class OnboardingViewModel(
         _state.value = OnboardingState(loading = true)
         viewModelScope.launch {
             try {
-                settings.setApiKey(key)
-                val result = models.refresh()
+                settings.setApiKey(app.fwchat.domain.Provider.FIREWORKS, key)
+                val result = models.refresh(app.fwchat.domain.Provider.FIREWORKS)
                 if (result.isSuccess) {
                     applyDefaultModelIfNeeded(settings, models)
                     _state.value = OnboardingState(done = true)
                 } else {
-                    settings.setApiKey(null)
+                    settings.setApiKey(app.fwchat.domain.Provider.FIREWORKS, null)
                     _state.value = OnboardingState(error = errorOf(result.exceptionOrNull()))
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                runCatching { settings.setApiKey(null) }
+                runCatching { settings.setApiKey(app.fwchat.domain.Provider.FIREWORKS, null) }
                 _state.value = OnboardingState(error = OnboardingError.OTHER)
             }
         }

@@ -7,12 +7,13 @@ import app.fwchat.domain.ChatEngine
 import app.fwchat.domain.ChatRepository
 import app.fwchat.domain.ChatRequest
 import app.fwchat.domain.EngineEvent
-import app.fwchat.domain.FireworksApi
 import app.fwchat.domain.FireworksException
 import app.fwchat.domain.GenParams
 import app.fwchat.domain.Message
 import app.fwchat.domain.MessageStatus
 import app.fwchat.domain.ModelRepository
+import app.fwchat.domain.Provider
+import app.fwchat.domain.ProviderApis
 import app.fwchat.domain.Role
 import app.fwchat.domain.SettingsRepository
 import app.fwchat.domain.StreamEvent
@@ -49,7 +50,7 @@ class ChatEngineImpl(
     private val chats: ChatRepository,
     private val models: ModelRepository,
     private val settings: SettingsRepository,
-    private val api: FireworksApi,
+    private val apis: ProviderApis,
     private val scope: CoroutineScope,
     private val publishIntervalMs: Long = 40,
     private val checkpointIntervalMs: Long = 1000,
@@ -219,7 +220,14 @@ class ChatEngineImpl(
                 messages += ApiMessage(if (m.role == Role.USER) "user" else "assistant", m.content)
             }
         }
-        return ChatRequest(model = chat.modelId, messages = messages, params = GenParamsCompat.forModel(globalParams, chat.modelId))
+        // La coercition (reasoning « none » refusé par GLM / gpt-oss) ne vaut que pour Fireworks; Featherless traduit
+        // le raisonnement en chat_template_kwargs dans son client et n'envoie jamais reasoning_effort.
+        val params = if (Provider.fromModelId(chat.modelId) == Provider.FIREWORKS) {
+            GenParamsCompat.forModel(globalParams, chat.modelId)
+        } else {
+            globalParams
+        }
+        return ChatRequest(model = chat.modelId, messages = messages, params = params)
     }
 
     // ------------------------------------------------------------------ streaming
@@ -251,6 +259,8 @@ class ChatEngineImpl(
     private suspend fun stream(chat: Chat, history: List<Message>, placeholder: Message) {
         val id = placeholder.id
         val buffer = Buffer()
+        // Le fournisseur se déduit du modèle du chat, quel que soit le mode actif dans les Réglages.
+        val provider = Provider.fromModelId(chat.modelId)
         var usage: StreamEvent.Usage? = null
         var finishReason: String? = null
         var failure: Throwable? = null
@@ -259,7 +269,7 @@ class ChatEngineImpl(
         _streaming.update { it + (id to StreamingText("", "")) }
         try {
             currentCoroutineContext().ensureActive()
-            val key = settings.apiKey()?.takeIf { it.isNotBlank() }
+            val key = settings.apiKey(provider)?.takeIf { it.isNotBlank() }
                 ?: throw FireworksException.Unauthorized("Clé API manquante")
             val globalParams = try {
                 settings.settings.first().defaultParams
@@ -290,7 +300,7 @@ class ChatEngineImpl(
                     }
                 }
                 try {
-                    api.streamChat(key, request).collect { ev ->
+                    apis[provider].streamChat(key, request).collect { ev ->
                         when (ev) {
                             is StreamEvent.ReasoningDelta -> buffer.appendReasoning(ev.text)
                             is StreamEvent.ContentDelta -> buffer.appendContent(ev.text)
@@ -368,7 +378,7 @@ class ChatEngineImpl(
                 } else {
                     _events.tryEmit(EngineEvent.Error(error ?: "Erreur inattendue", chat.id))
                 }
-                if (fwFailure is FireworksException.ModelNotFound) refreshModelsInBackground()
+                if (fwFailure is FireworksException.ModelNotFound) refreshModelsInBackground(provider)
             } else if (status == MessageStatus.ERROR) {
                 _events.tryEmit(EngineEvent.Error(error ?: "Erreur inattendue", chat.id))
             }
@@ -376,10 +386,10 @@ class ChatEngineImpl(
         interrupted?.let { throw it }
     }
 
-    private fun refreshModelsInBackground() {
+    private fun refreshModelsInBackground(provider: Provider) {
         scope.launch {
             try {
-                models.refresh()
+                models.refresh(provider)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

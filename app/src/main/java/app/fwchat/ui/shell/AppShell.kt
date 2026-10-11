@@ -38,6 +38,7 @@ import app.fwchat.ui.prompts.screens.PromptEditorScreen
 import app.fwchat.ui.prompts.screens.PromptListScreen
 import app.fwchat.ui.settings.SettingsScreen
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
@@ -50,7 +51,7 @@ fun AppRoot(container: AppContainer) {
     var startRoute by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         if (startRoute == null) {
-            startRoute = if (container.settings.apiKey().isNullOrBlank()) Routes.ONBOARDING else Routes.CHAT_NEW
+            startRoute = if (!container.settings.settings.first().hasApiKey) Routes.ONBOARDING else Routes.CHAT_NEW
         }
     }
     val start = startRoute

@@ -43,12 +43,12 @@ internal fun mapError(httpCode: Int, body: String, retryAfter: String? = null): 
         httpCode == 429 || codeUp == "RESOURCE_EXHAUSTED" || codeUp == "RATE_LIMIT_EXCEEDED" ->
             FireworksException.RateLimited(msg, retryAfter?.trim()?.toIntOrNull())
         httpCode == 404 || codeUp == "NOT_FOUND" -> FireworksException.ModelNotFound(msg)
-        isContextError(lower, code?.lowercase()) -> FireworksException.ContextLengthExceeded(msg)
+        isContextErrorText(lower, code?.lowercase()) -> FireworksException.ContextLengthExceeded(msg)
         else -> FireworksException.Http(httpCode, body)
     }
 }
 
-private fun isContextError(lowerMessage: String, lowerCode: String?): Boolean =
+internal fun isContextErrorText(lowerMessage: String, lowerCode: String?): Boolean =
     lowerCode == "context_length_exceeded" ||
         "context length" in lowerMessage || "context window" in lowerMessage ||
         "maximum context" in lowerMessage || "context_length_exceeded" in lowerMessage ||
@@ -58,11 +58,20 @@ private fun isContextError(lowerMessage: String, lowerCode: String?): Boolean =
 fun FireworksException.toUserMessage(): String = when (this) {
     is FireworksException.Unauthorized -> "Clé API invalide ou manquante. Vérifie-la dans les réglages."
     is FireworksException.InsufficientCredit -> "Crédit Fireworks insuffisant. Recharge ton compte puis réessaie."
-    is FireworksException.RateLimited -> if (retryAfterSeconds != null) {
+    is FireworksException.RateLimited -> if (concurrency) {
+        "Limite de concurrence atteinte: attends la fin d'une autre réponse."
+    } else if (retryAfterSeconds != null) {
         "Trop de requêtes (limite atteinte). Réessaie dans $retryAfterSeconds s."
     } else {
         "Trop de requêtes (limite atteinte). Réessaie dans quelques instants."
     }
+    is FireworksException.ModelGated ->
+        "Ce modèle est verrouillé: connecte ton compte HuggingFace sur featherless.ai pour y accéder." +
+            (url?.let { " $it" } ?: "")
+    is FireworksException.ModelNotInPlan -> "Ce modèle est hors de ton plan Featherless."
+    is FireworksException.ModelCold ->
+        "Modèle froid: son chargement peut prendre plusieurs minutes, réessaie plus tard."
+    is FireworksException.NoCapacity -> "Capacité insuffisante pour ce modèle. Réessaie plus tard."
     is FireworksException.ModelNotFound ->
         "Modèle introuvable ou indisponible. La liste des modèles a été rechargée: choisis-en un autre."
     is FireworksException.ContextLengthExceeded ->

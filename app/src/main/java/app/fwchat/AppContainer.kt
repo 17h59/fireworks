@@ -9,7 +9,10 @@ import app.fwchat.data.db.build
 import app.fwchat.data.net.BillingRepositoryImpl
 import app.fwchat.data.net.ChatEngineImpl
 import app.fwchat.data.net.FileBillingStore
+import app.fwchat.data.net.CompactModelCache
+import app.fwchat.data.net.FeatherlessApiImpl
 import app.fwchat.data.net.FileModelCache
+import app.fwchat.data.net.FilePlanCache
 import app.fwchat.data.net.FireworksApiImpl
 import app.fwchat.data.net.ModelRepositoryImpl
 import app.fwchat.data.prefs.KeystoreSecretStore
@@ -20,6 +23,8 @@ import app.fwchat.domain.BillingRepository
 import app.fwchat.domain.ChatEngine
 import app.fwchat.domain.ChatRepository
 import app.fwchat.domain.ModelRepository
+import app.fwchat.domain.Provider
+import app.fwchat.domain.ProviderApis
 import app.fwchat.domain.SettingsRepository
 import app.fwchat.domain.SystemPromptRepository
 import app.fwchat.service.GenerationService
@@ -31,6 +36,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
@@ -56,7 +63,12 @@ class AppContainer(context: Context) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    private val api = FireworksApiImpl(httpClient, baseUrl = "https://api.fireworks.ai")
+    private val apis = ProviderApis(
+        mapOf(
+            Provider.FIREWORKS to FireworksApiImpl(httpClient, baseUrl = "https://api.fireworks.ai"),
+            Provider.FEATHERLESS to FeatherlessApiImpl(httpClient, baseUrl = "https://api.featherless.ai"),
+        ),
+    )
 
     private val database: AppDatabase = AppDatabase.build(appContext)
 
@@ -69,13 +81,23 @@ class AppContainer(context: Context) {
     val prompts: SystemPromptRepository = SystemPromptRepositoryImpl(database)
     private val settingsImpl = SettingsRepositoryImpl(
         dataStore = dataStore,
-        secretStore = KeystoreSecretStore(File(filesDir, "secrets/api_key.bin")),
+        secretStores = mapOf(
+            // Fichier et alias historiques: la clé Fireworks d'un utilisateur existant reste lisible.
+            Provider.FIREWORKS to KeystoreSecretStore(File(filesDir, "secrets/api_key.bin")),
+            Provider.FEATHERLESS to KeystoreSecretStore(
+                File(filesDir, "secrets/api_key_featherless.bin"), alias = "fwchat_api_key_featherless_v1",
+            ),
+        ),
     )
     val settings: SettingsRepository = settingsImpl
     val models: ModelRepository = ModelRepositoryImpl(
-        api = api,
+        apis = apis,
         settings = settings,
-        cache = FileModelCache(File(filesDir, "models_cache.json")),
+        caches = mapOf(
+            Provider.FIREWORKS to FileModelCache(File(filesDir, "models_cache.json")),
+            Provider.FEATHERLESS to CompactModelCache(File(filesDir, "models_cache_featherless.json")),
+        ),
+        planCache = FilePlanCache(File(filesDir, "featherless_plan.json")),
     )
     /** Dépenses et crédit estimé (lecture seule, affichés uniquement dans les Réglages). */
     val billing: BillingRepository = BillingRepositoryImpl(
@@ -95,7 +117,7 @@ class AppContainer(context: Context) {
         chats = chats,
         models = models,
         settings = settings,
-        api = api,
+        apis = apis,
         scope = appScope,
         awaitReady = { recovered.await() },
     )
@@ -121,8 +143,16 @@ class AppContainer(context: Context) {
                 // Non bloquant.
             }
             try {
-                if (!settings.apiKey().isNullOrBlank() && models.refresh().isSuccess) {
-                    applyDefaultModelIfNeeded(settings, models)
+                // Fournisseur actif seulement, et seulement s'il a une clé. La liste Featherless pèse ~2,4 Mo:
+                // elle n'est rechargée au démarrage que si le cache a plus de 6 h.
+                val active = settings.settings.first().activeProvider
+                if (!settings.apiKey(active).isNullOrBlank()) {
+                    val result = if (active == Provider.FEATHERLESS) {
+                        models.refreshIfStale(active, STARTUP_MAX_AGE_MS)
+                    } else {
+                        models.refresh(active)
+                    }
+                    if (result.isSuccess) applyDefaultModelIfNeeded(settings, models)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -130,8 +160,24 @@ class AppContainer(context: Context) {
                 // Hors-ligne: on garde le cache.
             }
         }
+        refreshModelsOnProviderSwitch()
         keepProcessAliveWhileGenerating()
         refreshBillingAfterGenerations()
+    }
+
+    /** À chaque bascule de fournisseur actif: recharge sa liste si son cache est vide ou ancien (et qu'il a une clé). */
+    private fun refreshModelsOnProviderSwitch() {
+        appScope.launch {
+            settings.settings.map { it.activeProvider }.distinctUntilChanged().drop(1).collect { provider ->
+                try {
+                    if (models.refreshIfStale(provider).isSuccess) applyDefaultModelIfNeeded(settings, models)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Non bloquant.
+                }
+            }
+        }
     }
 
     /**
@@ -165,16 +211,20 @@ class AppContainer(context: Context) {
             var previous = emptySet<String>()
             var lastRefreshAt = 0L
             engine.generatingChats.collect { current ->
-                val finished = (previous - current).isNotEmpty()
+                val finishedIds = previous - current
                 previous = current
-                if (finished) {
+                if (finishedIds.isNotEmpty()) {
                     launch {
                         delay(BILLING_REFRESH_DELAY_MS)
                         val now = System.currentTimeMillis()
                         if (now - lastRefreshAt < BILLING_MIN_INTERVAL_MS) return@launch
                         lastRefreshAt = now
                         try {
-                            if (!settings.apiKey().isNullOrBlank()) billing.refresh()
+                            // La facturation n'existe que chez Fireworks: ignorée si les chats terminés sont Featherless.
+                            val fireworksFinished = finishedIds.any { id ->
+                                chats.getChat(id)?.modelId?.let { Provider.fromModelId(it) == Provider.FIREWORKS } == true
+                            }
+                            if (fireworksFinished && !settings.apiKey(Provider.FIREWORKS).isNullOrBlank()) billing.refresh()
                         } catch (e: CancellationException) {
                             throw e
                         } catch (e: Exception) {
@@ -189,5 +239,6 @@ class AppContainer(context: Context) {
     private companion object {
         const val BILLING_REFRESH_DELAY_MS = 2_000L
         const val BILLING_MIN_INTERVAL_MS = 5_000L
+        const val STARTUP_MAX_AGE_MS = 6L * 60 * 60 * 1000
     }
 }

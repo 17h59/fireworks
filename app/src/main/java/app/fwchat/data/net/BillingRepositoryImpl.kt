@@ -140,7 +140,8 @@ class BillingRepositoryImpl(
         lock.withLock {
             _state.value = _state.value.copy(loading = true)
             try {
-                val key = settings.apiKey()
+                // Facturation Fireworks uniquement: jamais appelée avec une clé Featherless.
+                val key = settings.apiKey(app.fwchat.domain.Provider.FIREWORKS)
                 if (key.isNullOrBlank()) {
                     publish(error = BillingError.UNAUTHORIZED)
                     return
