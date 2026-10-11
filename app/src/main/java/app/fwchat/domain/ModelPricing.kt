@@ -62,6 +62,8 @@ object ModelPricing {
 
 /** Palier de coût de 1 (économique) à 4 (très cher), ou null si le prix est inconnu. */
 fun costTier(id: String): Int? {
+    // Table de prix Fireworks seulement: aucun palier pour Featherless.
+    if (Provider.fromModelId(id) != Provider.FIREWORKS && '/' in id) return null
     val mixed = ModelPricing.priceOf(id)?.blended ?: return null
     return when {
         mixed < ModelPricing.TIER_1_MAX -> 1

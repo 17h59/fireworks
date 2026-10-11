@@ -23,7 +23,16 @@ sealed interface StreamEvent {
 sealed class FireworksException(message: String, cause: Throwable? = null) : Exception(message, cause) {
     class Unauthorized(msg: String) : FireworksException(msg)
     class InsufficientCredit(msg: String) : FireworksException(msg)
-    class RateLimited(msg: String, val retryAfterSeconds: Int?) : FireworksException(msg)
+    /** [concurrency] = limite de CONCURRENCE (Featherless) plutôt qu'un débit de requêtes. */
+    class RateLimited(msg: String, val retryAfterSeconds: Int?, val concurrency: Boolean = false) : FireworksException(msg)
+    /** Featherless: modèle verrouillé (HuggingFace), il faut connecter son compte sur [url]. */
+    class ModelGated(val url: String?, msg: String = "Modèle verrouillé") : FireworksException(msg)
+    /** Featherless: modèle hors du plan de l'utilisateur. */
+    class ModelNotInPlan(msg: String) : FireworksException(msg)
+    /** Featherless: modèle froid (chargement long). */
+    class ModelCold(msg: String) : FireworksException(msg)
+    /** 503: capacité insuffisante pour ce modèle. */
+    class NoCapacity(msg: String) : FireworksException(msg)
     /** 404 / NOT_FOUND sur le modèle: déclenche un rechargement de la liste. */
     class ModelNotFound(msg: String) : FireworksException(msg)
     class ContextLengthExceeded(msg: String) : FireworksException(msg)
@@ -31,12 +40,25 @@ sealed class FireworksException(message: String, cause: Throwable? = null) : Exc
     class Network(cause: Throwable) : FireworksException(cause.message ?: "Erreur réseau", cause)
 }
 
-/** Client Fireworks. Aucune dépendance Android. Les erreurs sont des [FireworksException]. */
-interface FireworksApi {
-    /** Modèles de chat serverless prêts (supportsServerless, state READY, pas d'embedding/reranker). Pagination gérée. */
+/**
+ * Client d'un fournisseur (Fireworks ou Featherless). Aucune dépendance Android.
+ * Les erreurs sont des [FireworksException] (nom historique, valable pour tous les fournisseurs).
+ */
+interface ChatApi {
+    val provider: Provider
+    /** Modèles de chat utilisables (non-chat exclus). Pagination gérée. */
     suspend fun listModels(apiKey: String): List<ModelInfo>
     /** SSE. Le Flow se termine après [StreamEvent.Finish]; annuler la collecte ferme la connexion. */
     fun streamChat(apiKey: String, request: ChatRequest): Flow<StreamEvent>
+    /** Plan de l'abonnement (Featherless seulement); null si le fournisseur n'en a pas. */
+    suspend fun plan(apiKey: String): PlanInfo? = null
+}
+
+/** Routeur Provider -> [ChatApi], utilisé par le moteur et le dépôt de modèles. */
+class ProviderApis(private val apis: Map<Provider, ChatApi>) {
+    operator fun get(provider: Provider): ChatApi =
+        apis[provider] ?: throw IllegalStateException("Aucune API pour $provider")
+    fun forModel(modelId: String): ChatApi = get(Provider.fromModelId(modelId))
 }
 
 sealed interface EngineEvent {

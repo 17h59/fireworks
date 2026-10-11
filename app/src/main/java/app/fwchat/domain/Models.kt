@@ -56,15 +56,46 @@ object AppDefaults {
 }
 
 data class ModelInfo(
-    /** Id complet, ex: accounts/fireworks/models/glm-5p3 */
+    /** Id complet, ex: accounts/fireworks/models/glm-5p3 ou Qwen/Qwen3-4B (Featherless). */
     val id: String,
     val displayName: String,
+    /** 0 = inconnu. Pour Featherless, le contexte effectif est borné par le plan: voir [effectiveContextLength]. */
     val contextLength: Int,
     val supportsImageInput: Boolean,
     val supportsTools: Boolean,
+    /** Featherless: modèle HuggingFace verrouillé (compte HF à connecter sur featherless.ai). */
+    val gated: Boolean = false,
+    /** Featherless: null = inconnu (pas de clé lors du chargement). */
+    val availableOnPlan: Boolean? = null,
+    /** Featherless: coût de concurrence (le plan offre N unités simultanées). */
+    val concurrencyCost: Int? = null,
 ) {
+    val provider: Provider get() = Provider.fromModelId(id)
     val family: PromptFamily get() = PromptFamily.fromModelId(id)
     val shortId: String get() = id.substringAfterLast('/')
+    /** Clé de recherche en minuscules, calculée une fois (recherche rapide sur ~7 500 modèles). */
+    val searchKey: String by lazy(LazyThreadSafetyMode.PUBLICATION) { (id + " " + displayName).lowercase() }
+}
+
+/** Contexte utilisable: borné par le plan quand il est connu. 0 = inconnu. */
+fun ModelInfo.effectiveContextLength(plan: PlanInfo?): Int {
+    val max = plan?.maxContextLength ?: return contextLength
+    return if (contextLength <= 0) max else minOf(contextLength, max)
+}
+
+/** Garde les modèles dont l'id/le nom contient tous les mots de [query] (insensible à la casse). Vide = tout. */
+fun List<ModelInfo>.searchModels(query: String, limit: Int = Int.MAX_VALUE): List<ModelInfo> {
+    val terms = query.trim().lowercase().split(' ').filter { it.isNotEmpty() }
+    if (terms.isEmpty()) return if (limit >= size) this else take(limit)
+    val out = ArrayList<ModelInfo>()
+    for (m in this) {
+        val key = m.searchKey
+        if (terms.all { it in key }) {
+            out += m
+            if (out.size >= limit) break
+        }
+    }
+    return out
 }
 
 data class SystemPrompt(

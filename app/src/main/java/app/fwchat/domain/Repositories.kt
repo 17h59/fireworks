@@ -1,6 +1,7 @@
 package app.fwchat.domain
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 
 /** Implémenté par la couche data (Room). Voir docs/ARCHITECTURE.md pour la sémantique des branches. */
 interface ChatRepository {
@@ -61,26 +62,57 @@ interface SystemPromptRepository {
 }
 
 data class AppSettings(
+    /** true si AU MOINS une clé API existe (sinon: onboarding). */
     val hasApiKey: Boolean,
+    /** Modèle par défaut du fournisseur ACTIF. */
     val defaultModelId: String?,
     /** null = "Aucun prompt système" par défaut. */
     val defaultSystemPromptId: String?,
+    /** Global: partagé par tous les fournisseurs. */
     val defaultParams: GenParams,
+    val activeProvider: Provider = Provider.FIREWORKS,
+    val providersWithKey: Set<Provider> = emptySet(),
+    /** Modèle par défaut de chaque fournisseur. */
+    val defaultModelIds: Map<Provider, String?> = emptyMap(),
 )
 
 interface SettingsRepository {
     val settings: Flow<AppSettings>
-    /** Clé stockée chiffrée (Android Keystore). */
-    suspend fun apiKey(): String?
-    suspend fun setApiKey(key: String?)
-    suspend fun setDefaultModel(modelId: String?)
+    /** Clé du fournisseur, stockée chiffrée (Android Keystore). */
+    suspend fun apiKey(provider: Provider): String?
+    /**
+     * Enregistre (ou efface avec null) la clé du fournisseur. Si le fournisseur actif n'a pas de clé, [provider]
+     * devient actif; effacer la clé du fournisseur actif bascule sur l'autre s'il a une clé.
+     */
+    suspend fun setApiKey(provider: Provider, key: String?)
+    suspend fun setActiveProvider(provider: Provider)
+    suspend fun setDefaultModel(provider: Provider, modelId: String?)
     suspend fun setDefaultSystemPrompt(promptId: String?)
     suspend fun setDefaultParams(params: GenParams)
 }
 
+/** Clé du fournisseur actif (raccourci). */
+suspend fun SettingsRepository.activeApiKey(): String? =
+    apiKey(settings.first().activeProvider)
+
 interface ModelRepository {
-    /** Modèles de chat serverless en cache local (triés), émis dès le démarrage. */
+    /** Modèles du fournisseur ACTIF (réactif à `activeProvider`), triés, émis dès le démarrage depuis le cache. */
     val models: Flow<List<ModelInfo>>
-    /** Recharge depuis l'API (au démarrage et à chaque erreur liée aux modèles). Met à jour le cache. */
-    suspend fun refresh(): Result<Unit>
+    /**
+     * Modèles d'un fournisseur donné, triés. Featherless: disponibles sur le plan d'abord, puis par id (~7 500 entrées;
+     * triés hors du thread principal: utiliser `searchModels` pour filtrer).
+     */
+    fun modelsFor(provider: Provider): Flow<List<ModelInfo>>
+    /** Plan Featherless en cache (null = inconnu / pas de clé). */
+    val plan: Flow<PlanInfo?>
+    /** Recharge depuis l'API (null = fournisseur actif). Met à jour le cache. */
+    suspend fun refresh(provider: Provider? = null): Result<Unit>
+    /** Recharge le plan Featherless (cache + flux [plan]). */
+    suspend fun refreshPlan(): Result<PlanInfo?>
+    /** Recharge [provider] seulement si son cache est vide ou plus vieux que [maxAgeMs] et qu'une clé existe. */
+    suspend fun refreshIfStale(provider: Provider, maxAgeMs: Long = DEFAULT_MAX_AGE_MS): Result<Unit>
+
+    companion object {
+        const val DEFAULT_MAX_AGE_MS = 24L * 60 * 60 * 1000
+    }
 }
