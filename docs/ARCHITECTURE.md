@@ -44,6 +44,14 @@ observés par les ViewModels ; la génération vit dans un scope applicatif (`Ch
 - Modèles serverless connus à ce jour : deepseek-v4p1-flash, ember-1, glm-5p2, glm-5p3, glm-5p3-flash, gpt-oss-120b, inkling, kimi-k3, minimax-m3, nemotron-3-ultra-nvfp4, nemotron-lightning-3p5-30b-a3b, qwen3p8-2p4t-a95b, qwen3p8-max. Un prompt système est respecté par tous (testé).
 - **Jamais de clé API dans le dépôt, les tests ou les logs.** Pour les tests live, lire `FW_API_KEY` dans l'environnement.
 
+## Fournisseurs (Fireworks et Featherless)
+
+- `Provider { FIREWORKS, FEATHERLESS }` ; le fournisseur d'un chat se **déduit de son modelId** (`accounts/…` = Fireworks, sinon Featherless/HuggingFace), sans migration Room. Le moteur utilise la clé et l'API du fournisseur du modèle du chat, quel que soit le mode actif.
+- `ChatApi` (`listModels`, `streamChat`, `plan`) implémenté par `FireworksApiImpl` et `FeatherlessApiImpl` (socle SSE commun `OpenAiCompatClient`) ; `ProviderApis` route Provider -> API.
+- Réglages : `activeProvider`, clé par fournisseur (`secrets/api_key.bin` = Fireworks, `secrets/api_key_featherless.bin`), modèle par défaut par fournisseur ; prompt système et paramètres de génération globaux. `hasApiKey` = au moins une clé ; si le fournisseur actif perd sa clé, bascule sur l'autre.
+- Featherless : `https://api.featherless.ai/v1`, liste `GET /v1/models?status=active&conversational=true&per_page=1000&page=N` (~7 500 modèles, décodage en flux, cache compact `models_cache_featherless.json`), `GET /v1/plan` (contexte effectif = min(modèle, plan)). `reasoning_effort` est ignoré par Featherless : « Aucun » devient `chat_template_kwargs`. 429 = limite de concurrence.
+- `ModelRepository.models` = liste du fournisseur actif ; `modelsFor(p)`, `refresh(p)`, `refreshIfStale(p)`, `plan`/`refreshPlan()`. Coûts (`$`) et facturation : Fireworks seulement.
+
 ## UX (cibles)
 
 - Écran principal = le chat. Tiroir latéral : « Nouveau chat », recherche par nom, liste des chats (appui long ou menu ⋮ : renommer, dupliquer-fork, supprimer), accès Réglages. Pas de sous-menus imbriqués.
