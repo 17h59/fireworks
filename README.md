@@ -1,8 +1,8 @@
 # FW Chat
 
-Une application Android de chat conçue **exclusivement pour [Fireworks AI](https://fireworks.ai)**.
-Simple, rapide, et **100 % locale** : tes conversations, tes prompts et ta clé API restent sur ton
-téléphone. Aucun serveur intermédiaire, aucun compte : seules les requêtes d'inférence partent vers Fireworks.
+Une application Android de chat pour **[Fireworks AI](https://fireworks.ai)** et **[Featherless](https://featherless.ai)**.
+Simple, rapide, et **100 % locale** : tes conversations, tes prompts et tes clés API restent sur ton
+téléphone. Aucun serveur intermédiaire, aucun compte : seules les requêtes d'inférence partent vers le fournisseur choisi.
 
 > Kotlin · Jetpack Compose · Material 3 · Room · Android 14+ (testé sur Android 15)
 
@@ -21,6 +21,14 @@ paramètres de génération, raisonnement visible, coûts.
 - **Fork** depuis n'importe quel message (« Nouveau chat à partir d'ici ») et duplication d'un chat.
 - Actions sous chaque message : copier, modifier, régénérer, nouveau chat à partir d'ici, supprimer.
 - Sauvegarde et restauration JSON de tout (chats + prompts).
+
+**Deux fournisseurs, un geste pour changer**
+- Une clé **Fireworks** et/ou une clé **Featherless** (facturation à l'usage d'un côté, abonnement forfaitaire de l'autre).
+- Le **mode actif** (Fireworks ou Featherless) se change d'un geste, dans les Réglages ou en haut du sélecteur de modèle :
+  la liste, le modèle par défaut et les nouveaux chats suivent. Un chat garde son fournisseur : tu peux rouvrir un chat
+  Featherless en mode Fireworks.
+- Featherless : ~7 500 modèles recherchables, badge « vision », modèles **verrouillés** (HuggingFace) ou **hors de ton plan**
+  signalés, coût de **concurrence** (⚡×N), contexte effectif borné par ton plan, carte « Plan Featherless » dans les Réglages.
 
 **Modèles et prompts**
 - Liste des modèles rechargée au démarrage et à chaque erreur liée aux modèles ; **modèle par défaut** pour chaque nouveau chat.
@@ -42,16 +50,17 @@ paramètres de génération, raisonnement visible, coûts.
   quel que soit le modèle, et conservés quand tu fermes l'app.
 
 **Coûts**
-- Icônes **`$` à `$$$$`** à côté de chaque modèle (indicatif, table de prix datée).
-- Carte « Dépenses & crédit » dans les Réglages : dépenses du mois (lues sur ton compte) et crédit estimé
-  à partir du solde que tu saisis.
+- Fireworks : icônes **`$` à `$$$$`** à côté de chaque modèle (indicatif, table de prix datée) et carte « Dépenses & crédit »
+  dans les Réglages (dépenses du mois lues sur ton compte, crédit estimé à partir du solde que tu saisis).
+- Featherless : pas de prix par token (abonnement forfaitaire), donc pas de `$` ni de carte de dépenses.
 
 ## Installer
 
 1. Depuis ton téléphone, ouvre la [release `latest`](https://github.com/17h59/fireworks/releases/tag/latest)
    et télécharge `fw-chat.apk` (autorise l'installation depuis ce navigateur si Android le demande).
-2. Au premier lancement, colle ta **clé API Fireworks** (créée sur [fireworks.ai](https://fireworks.ai)). Elle est
-   stockée **chiffrée** via l'Android Keystore.
+2. Au premier lancement, choisis **Fireworks** ou **Featherless** puis colle ta **clé API** (créée sur
+   [fireworks.ai](https://fireworks.ai) ou [featherless.ai](https://featherless.ai)). Elle est stockée **chiffrée**
+   via l'Android Keystore. Tu pourras ajouter l'autre clé plus tard dans les Réglages.
 3. Choisis un modèle, écris, c'est parti.
 
 L'APK est reconstruit automatiquement à chaque push sur `main` : la release `latest` est toujours à jour, et

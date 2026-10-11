@@ -26,6 +26,12 @@ tests de dessin), API et moteur via MockWebServer. Les tests **live** contre l'A
 FW_API_KEY=fw_xxx ./gradlew testDebugUnitTest --tests '*LiveFireworksTest'
 ```
 
+Même principe pour Featherless (les tests live sont ignorés sans `FL_API_KEY`) :
+
+```bash
+FL_API_KEY=xxx ./gradlew testDebugUnitTest --tests '*LiveFeatherlessTest'
+```
+
 Ne mets **jamais** de clé dans le dépôt, les tests ou les logs.
 
 Les tests Robolectric téléchargent les jars `android-all` au premier lancement (réseau requis). Les noms de tests
