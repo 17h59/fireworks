@@ -634,4 +634,88 @@ class ChatEngineImplTest {
         assertEquals(chatId, err.chatId)
         assertTrue(e.engine.generatingChats.value.isEmpty())
     }
+
+    private val flModel = "openai/gpt-oss-120b"
+
+    @Test
+    fun featherlessChatRoutesToItsApiAndKeyWhateverTheActiveProvider() = runTest {
+        val e = env()
+        e.settings.setApiKey(Provider.FEATHERLESS, "fl_key")
+        e.settings.setActiveProvider(Provider.FIREWORKS)
+        val chatId = e.chats.addChat(modelId = flModel)
+        e.flApi.handler = { script(StreamEvent.ContentDelta("ok"), StreamEvent.Usage(5, 2, null), StreamEvent.Finish("stop")) }
+        e.engine.send(chatId, "salut")
+        advanceUntilIdle()
+
+        assertEquals(0, e.api.requests.size)
+        assertEquals(listOf("fl_key"), e.flApi.keys)
+        assertEquals(flModel, e.flApi.requests.single().model)
+        val a = e.chats.assistants(chatId).single()
+        assertEquals(MessageStatus.COMPLETE, a.status)
+        assertEquals("ok", a.content)
+        assertEquals(5, a.promptTokens)
+        assertEquals(2, a.completionTokens)
+        assertNull(a.reasoningTokens)
+    }
+
+    @Test
+    fun fireworksChatKeepsUsingFireworksKeyWhenFeatherlessIsActive() = runTest {
+        val e = env()
+        e.settings.setApiKey(Provider.FEATHERLESS, "fl_key")
+        e.settings.setActiveProvider(Provider.FEATHERLESS)
+        val chatId = e.chats.addChat()
+        e.api.handler = { script(*nominal) }
+        e.engine.send(chatId, "x")
+        advanceUntilIdle()
+        assertEquals(listOf("fw_test_key"), e.api.keys)
+        assertEquals(0, e.flApi.requests.size)
+    }
+
+    @Test
+    fun reasoningNoneIsNotCoercedForFeatherlessButIsForFireworksGptOss() = runTest {
+        val e = env()
+        e.settings.setApiKey(Provider.FEATHERLESS, "fl_key")
+        e.settings.setDefaultParams(GenParams(maxTokens = 10, reasoningEffort = ReasoningEffort.NONE))
+        val flChat = e.chats.addChat(modelId = flModel)
+        val fwChat = e.chats.addChat(modelId = "accounts/fireworks/models/gpt-oss-120b")
+        e.flApi.handler = { script(*nominal) }
+        e.api.handler = { script(*nominal) }
+        e.engine.send(flChat, "a")
+        advanceUntilIdle()
+        e.engine.send(fwChat, "b")
+        advanceUntilIdle()
+        // Featherless garde NONE (traduit en chat_template_kwargs par son client); Fireworks le retire pour gpt-oss.
+        assertEquals(ReasoningEffort.NONE, e.flApi.requests.single().params.reasoningEffort)
+        assertNull(e.api.requests.single().params.reasoningEffort)
+    }
+
+    @Test
+    fun modelNotFoundOnFeatherlessRefreshesFeatherlessList() = runTest {
+        val e = env()
+        e.settings.setApiKey(Provider.FEATHERLESS, "fl_key")
+        val chatId = e.chats.addChat(modelId = flModel)
+        e.flApi.handler = { flow { throw FireworksException.ModelNotFound("nope") } }
+        e.engine.send(chatId, "x")
+        advanceUntilIdle()
+        assertEquals(listOf<Provider?>(Provider.FEATHERLESS), e.models.refreshed)
+    }
+
+    @Test
+    fun missingFeatherlessKeyFailsWithoutCallingAnyApi() = runTest {
+        val e = env()
+        val chatId = e.chats.addChat(modelId = flModel)
+        e.engine.send(chatId, "x")
+        advanceUntilIdle()
+        assertEquals(0, e.flApi.requests.size)
+        assertEquals(0, e.api.requests.size)
+        assertEquals(MessageStatus.ERROR, e.chats.assistants(chatId).single().status)
+        assertEquals(listOf<EngineEvent>(EngineEvent.Unauthorized), e.events)
+    }
+
+    @Test
+    fun providerIsDeducedFromTheModelId() {
+        assertEquals(Provider.FIREWORKS, Provider.fromModelId("accounts/fireworks/models/glm-5p3"))
+        assertEquals(Provider.FEATHERLESS, Provider.fromModelId("Qwen/Qwen3-4B"))
+        assertEquals(Provider.FEATHERLESS, Provider.fromModelId("glm-5p3"))
+    }
 }
